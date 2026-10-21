@@ -5,7 +5,10 @@ import uuid
 
 import requests
 
-API = "https://id.supercell.com/api/ingame/account"
+APIS = (
+    "https://id.supercell.com/api/ingame/account",
+    "https://ingame.id.supercell.com/api/account",
+)
 
 
 class ScidError(RuntimeError):
@@ -14,7 +17,13 @@ class ScidError(RuntimeError):
 
 def _post(session, method, fields):
     try:
-        response = session.post(f"{API}/{method}", data=fields, timeout=(5, 10))
+        bases = (getattr(session, "scid_api"),) if hasattr(session, "scid_api") else APIS
+        for base in bases:
+            response = session.post(f"{base}/{method}", data=fields, timeout=(5, 10))
+            if response.status_code == 404 and not hasattr(session, "scid_api"):
+                continue
+            session.scid_api = base
+            break
         response.raise_for_status()
         body = response.json()
     except (requests.RequestException, ValueError) as exc:
