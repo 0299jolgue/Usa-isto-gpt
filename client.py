@@ -173,9 +173,13 @@ def main():
     parser.add_argument("--hi", type=int, default=int(os.environ.get("BS_HI", "0")))
     parser.add_argument("--lo", type=int, default=int(os.environ.get("BS_LO", "0")))
     parser.add_argument("--token", default=os.environ.get("BS_TOKEN", ""))
+    parser.add_argument("--guest", action="store_true", help="Criar uma conta convidada com ID 0:0 e token nulo")
     parser.add_argument("--host", default="game.brawlstarsgame.com")
     parser.add_argument("--port", type=int, default=9339)
     args = parser.parse_args()
+    if args.guest:
+        args.hi = args.lo = 0
+        args.token = None
     v = Version()
     for _ in range(2):
         if run(args, v):
