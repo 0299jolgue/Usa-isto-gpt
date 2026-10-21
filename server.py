@@ -64,7 +64,7 @@ document.getElementById('pinForm').addEventListener('submit',async ev=>{
       await new Promise(resolve=>setTimeout(resolve,1200));
       const status=await fetch('/status/'+encodeURIComponent(data.id),{cache:'no-store'});
       const job=await status.json();if(!status.ok)throw Error(job.error||'Erro ao consultar');
-      show(job.lines.join('\n') || 'A ligar ao servidor...');
+      show(job.lines.join('\\n') || 'A ligar ao servidor...');
       if(job.done)break;
     }
   }catch(error){show(error.message)}finally{confirm.disabled=false}
