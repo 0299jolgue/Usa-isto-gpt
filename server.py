@@ -85,7 +85,7 @@ def auth_start():
         scid_start(session, email)
     except ScidError as exc:
         session.close()
-        return page(message=str(exc), code=code, email=email, status=502)
+        return page(message=str(exc), code=code, email=email)
     challenge = secrets.token_urlsafe(24)
     with lock:
         now = time.monotonic()
@@ -129,7 +129,7 @@ def auth_confirm():
     try:
         hi, lo, token = scid_confirm(auth['session'], auth['email'], pin)
     except ScidError as exc:
-        return page(message=str(exc), code=auth['code'], email=auth['email'], status=502)
+        return page(message=str(exc), code=auth['code'], email=auth['email'])
     finally:
         auth['session'].close()
     job_id = secrets.token_urlsafe(24)
