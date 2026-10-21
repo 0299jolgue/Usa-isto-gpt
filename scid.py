@@ -1,6 +1,7 @@
 # Python 3.12 / Linux / Supercell ID email and PIN authentication
 import base64
 import json
+import logging
 import uuid
 
 import requests
@@ -9,6 +10,7 @@ APIS = (
     "https://id.supercell.com/api/ingame/account",
     "https://ingame.id.supercell.com/api/account",
 )
+log = logging.getLogger('brawl-room.scid')
 
 
 class ScidError(RuntimeError):
@@ -19,7 +21,9 @@ def _post(session, method, fields):
     try:
         bases = (getattr(session, "scid_api"),) if hasattr(session, "scid_api") else APIS
         for base in bases:
+            log.info('scid_request method=%s base=%s', method, base)
             response = session.post(f"{base}/{method}", data=fields, timeout=(5, 10))
+            log.info('scid_response method=%s status=%s', method, response.status_code)
             if response.status_code == 404 and not hasattr(session, "scid_api"):
                 continue
             session.scid_api = base
