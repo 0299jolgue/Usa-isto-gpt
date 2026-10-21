@@ -1,5 +1,6 @@
 *
 !client.py
+!scid.py
 !server.py
 !requirements.txt
 !Dockerfile
