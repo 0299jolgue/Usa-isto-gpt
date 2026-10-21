@@ -1,10 +1,11 @@
 # Python 3.12 / Linux / Supercell ID email and PIN authentication
 import base64
 import json
+import uuid
 
 import requests
 
-API = "https://ingame.id.supercell.com/api/account"
+API = "https://id.supercell.com/api/ingame/account"
 
 
 class ScidError(RuntimeError):
@@ -13,7 +14,7 @@ class ScidError(RuntimeError):
 
 def _post(session, method, fields):
     try:
-        response = session.post(f"{API}/{method}", data=fields, timeout=20)
+        response = session.post(f"{API}/{method}", data=fields, timeout=(5, 10))
         response.raise_for_status()
         body = response.json()
     except (requests.RequestException, ValueError) as exc:
@@ -24,7 +25,11 @@ def _post(session, method, fields):
 
 
 def start(session, email):
-    _post(session, "login", {"email": email, "game": "laser", "env": "prod", "lang": "pt"})
+    session.headers.update({
+        "User-Agent": "scid/4527-i (iOS 17.4.1; laser-prod; iPhone13,1)",
+        "X-Supercell-Device-Id": str(uuid.uuid4()).upper(),
+    })
+    _post(session, "login", {"email": email, "game": "laser", "env": "prod", "lang": "pt", "remember": "true"})
 
 
 def confirm(session, email, pin):
