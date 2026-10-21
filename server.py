@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import requests
-from flask import Flask, render_template_string, request
+from flask import Flask, redirect, render_template_string, request, url_for
 from waitress import serve
 
 from client import Version, run
@@ -40,7 +40,8 @@ a{color:#9cc8ff}
 <form action="/auth/start" method="post">
 <label for="code">Código da sala</label><input id="code" name="code" maxlength="64" required value="{{ code }}" autocapitalize="characters">
 <label for="email">Email</label><input id="email" name="email" type="email" required value="{{ email }}" autocomplete="email">
-<button type="submit">Enviar PIN</button></form>
+<button type="submit">Enviar PIN</button>
+<button type="submit" formaction="/guest" formmethod="post" formnovalidate>Entrar com conta convidada</button></form>
 {% elif step == 'pin' %}
 <p>Introduz o PIN enviado para {{ email }}.</p>
 <form action="/auth/confirm" method="post"><input type="hidden" name="id" value="{{ challenge }}">
@@ -116,6 +117,31 @@ def execute(job_id, args):
         args.token = None
 
 
+def schedule_join(code, hi, lo, token):
+    job_id = secrets.token_urlsafe(24)
+    with lock:
+        now = time.monotonic()
+        for old_id in list(jobs):
+            if jobs[old_id]['done'] and now - jobs[old_id]['created'] > 900:
+                del jobs[old_id]
+        if sum(not job['done'] for job in jobs.values()) >= 2:
+            return None
+        jobs[job_id] = {'lines': [], 'done': False, 'created': now}
+    args = SimpleNamespace(code=code, hi=hi, lo=lo, token=token,
+                           host='game.brawlstarsgame.com', port=9339)
+    workers.submit(execute, job_id, args)
+    return redirect(url_for('job_status', job_id=job_id), code=303)
+
+
+@app.post('/guest')
+def guest_join():
+    code = request.form.get('code', '').strip().lstrip('#').upper()
+    if not code or len(code) > 64 or any(not (c.isascii() and c.isalnum()) for c in code):
+        return page(message='Código da sala inválido.', code=code, status=400)
+    result = schedule_join(code, 0, 0, None)
+    return result or page(message='Já existem duas tentativas em curso. Aguarda um momento.', code=code, status=429)
+
+
 @app.post('/auth/confirm')
 def auth_confirm():
     challenge = request.form.get('id', '')
@@ -132,19 +158,8 @@ def auth_confirm():
         return page(message=str(exc), code=auth['code'], email=auth['email'])
     finally:
         auth['session'].close()
-    job_id = secrets.token_urlsafe(24)
-    with lock:
-        now = time.monotonic()
-        for old_id in list(jobs):
-            if jobs[old_id]['done'] and now - jobs[old_id]['created'] > 900:
-                del jobs[old_id]
-        if sum(not job['done'] for job in jobs.values()) >= 2:
-            return page(message='Já existem duas tentativas em curso. Aguarda um momento.', status=429)
-        jobs[job_id] = {'lines': [], 'done': False, 'created': now}
-    args = SimpleNamespace(code=auth['code'], hi=hi, lo=lo, token=token,
-                           host='game.brawlstarsgame.com', port=9339)
-    workers.submit(execute, job_id, args)
-    return job_status(job_id)
+    result = schedule_join(auth['code'], hi, lo, token)
+    return result or page(message='Já existem duas tentativas em curso. Aguarda um momento.', status=429)
 
 
 @app.get('/status/<job_id>')
