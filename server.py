@@ -76,6 +76,11 @@ def index():
     return page()
 
 
+@app.get('/health')
+def health():
+    return 'ok', 200, {'Content-Type': 'text/plain; charset=utf-8'}
+
+
 @app.post('/auth/start')
 def auth_start():
     code = request.form.get('code', '').strip().lstrip('#').upper()
