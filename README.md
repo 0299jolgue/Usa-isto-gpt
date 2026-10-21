@@ -1,6 +1,6 @@
 # Brawl Stars: entrada em sala por código
 
-Site Python para ShardCloud. A página aceita email do Supercell ID e PIN ou tenta criar uma conta convidada. Ambas as opções recebem o código da sala e tentam enviar `TeamJoinOrCreateRoomMessage` (14371) por TCP.
+Site Python para ShardCloud. A página aceita email do Supercell ID e PIN ou tenta criar uma conta convidada. Ambas as opções recebem o código da sala e tentam enviar `TeamJoinOrCreateRoomMessage` (14371) por TCP. Para alojamento Python na ShardCloud, `main.py` e `.shardcloud` são os ficheiros de arranque obrigatórios.
 
 ## Estado
 
@@ -10,7 +10,7 @@ Os formulários e a sequência entre pedidos foram testados localmente com respo
 
 ```bash
 pip install -r requirements.txt
-python server.py
+python main.py
 ```
 
 Define `PORT` se necessário. O `Dockerfile` inicia a aplicação na porta configurada pela plataforma.
