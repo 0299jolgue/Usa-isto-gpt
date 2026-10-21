@@ -1,5 +1,7 @@
 DISPLAY_NAME=brawl-stars-room-join
 DESCRIPTION=Entrar numa sala Brawl Stars por codigo
 MAIN=main.py
+LANGUAGE=python
 MEMORY=512
-VERSION=LATEST
+VERSION=recommended
+SUBDOMAIN=brawl-stars-room-join
