@@ -99,12 +99,37 @@ def send_packet(sock, typ, body):
 
 
 def read_string(data, offset):
+    if offset + 4 > len(data):
+        raise ValueError("String truncada")
     length = int.from_bytes(data[offset:offset + 4], "big", signed=True)
     if length < 0:
         return None
     if length > len(data) - offset - 4:
         raise ValueError("String truncada")
     return data[offset + 4:offset + 4 + length].decode(errors="replace")
+
+
+def handle_login_failure(data, version, emit):
+    if len(data) < 4:
+        raise RuntimeError(f"LoginFailed truncado: {data.hex()}")
+    code = int.from_bytes(data[:4], "big", signed=True)
+    emit("Login recusado. Código:", code)
+    try:
+        description = read_string(data, 4)
+        obj = json.loads(description or "")
+    except (ValueError, TypeError):
+        obj = None
+    if code == 7 and isinstance(obj, dict) and "sha" in obj and "version" in obj:
+        try:
+            parts = [int(x) for x in obj["version"].split(".")]
+        except (AttributeError, ValueError):
+            parts = []
+        if len(parts) == 3:
+            version.major, version.minor, version.build = parts
+            version.sha = obj["sha"]
+            emit("Versão atualizada:", obj["version"])
+            return False
+    raise RuntimeError(f"Login recusado pelo servidor (código {code}; dados {data[:80].hex()})")
 
 
 def run(args, v, emit=print):
@@ -118,6 +143,8 @@ def run(args, v, emit=print):
         send_packet(sock, 10100, hello(v))
         typ, response = read_packet(sock)
         emit("Recebido:", typ, len(response), "bytes")
+        if typ == 20103:
+            return handle_login_failure(response, v, emit)
         if typ != 20100 or len(response) < 28:
             raise RuntimeError("ServerHello inesperado")
         session_key = response[4:28]
@@ -135,20 +162,7 @@ def run(args, v, emit=print):
                 data = crypto_box_open_afternm(response, server_nonce, shared)
             emit("Recebido:", typ, len(data), "bytes")
             if typ == 20103:
-                code = int.from_bytes(data[:4], "big", signed=True)
-                emit("Login recusado. Código:", code)
-                try:
-                    obj = json.loads(read_string(data, 4) or "")
-                except (ValueError, TypeError):
-                    obj = None
-                if code == 7 and isinstance(obj, dict) and "sha" in obj and "version" in obj:
-                    parts = [int(x) for x in obj["version"].split(".")]
-                    if len(parts) == 3:
-                        v.major, v.minor, v.build = parts
-                        v.sha = obj["sha"]
-                        emit("Versão atualizada:", obj["version"])
-                        return False
-                raise RuntimeError("Login recusado")
+                return handle_login_failure(data, v, emit)
             if typ == 20104:
                 emit("Login aceite")
                 # Constructor x1 receives the room code; encode writes that
