@@ -1,6 +1,7 @@
 # Python 3.12 / ShardCloud / HTML forms backed by a Python TCP client
 import os
 import re
+import logging
 import secrets
 import threading
 import time
@@ -15,6 +16,7 @@ from client import Version, run
 from scid import ScidError, confirm as scid_confirm, start as scid_start
 
 app = Flask(__name__)
+log = logging.getLogger('brawl-room')
 lock = threading.Lock()
 pending = {}
 jobs = {}
@@ -62,6 +64,7 @@ def page(step='email', message='', code='', email='', challenge='', refresh=Fals
 
 @app.after_request
 def no_cache(response):
+    log.info('http_response method=%s path=%s status=%s', request.method, request.path, response.status_code)
     response.headers['Cache-Control'] = 'no-store'
     response.headers['Referrer-Policy'] = 'no-referrer'
     response.headers['X-Content-Type-Options'] = 'nosniff'
@@ -82,9 +85,11 @@ def auth_start():
     if len(email) > 254 or not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', email):
         return page(message='Email inválido.', code=code, email=email, status=400)
     session = requests.Session()
+    log.info('scid_start_requested')
     try:
         scid_start(session, email)
     except ScidError as exc:
+        log.warning('scid_start_failed reason=%s', exc)
         session.close()
         return page(message=str(exc), code=code, email=email)
     challenge = secrets.token_urlsafe(24)
@@ -94,13 +99,16 @@ def auth_start():
             if now - pending[old_id]['created'] > 600:
                 pending.pop(old_id)['session'].close()
         pending[challenge] = {'email': email, 'code': code, 'session': session, 'created': now}
+    log.info('scid_pin_requested')
     return page(step='pin', email=email, challenge=challenge)
 
 
 def execute(job_id, args):
     def emit(*parts):
+        line = ' '.join(map(str, parts))
+        log.info('tcp_job %s', line)
         with lock:
-            jobs[job_id]['lines'].append(' '.join(map(str, parts)))
+            jobs[job_id]['lines'].append(line)
     try:
         version = Version()
         for _ in range(2):
@@ -110,6 +118,7 @@ def execute(job_id, args):
         else:
             raise RuntimeError('Não foi possível atualizar a versão')
     except Exception as exc:
+        log.exception('tcp_job_failed')
         emit(f'Erro: {type(exc).__name__}: {exc}')
     finally:
         with lock:
@@ -129,6 +138,7 @@ def schedule_join(code, hi, lo, token):
         jobs[job_id] = {'lines': [], 'done': False, 'created': now}
     args = SimpleNamespace(code=code, hi=hi, lo=lo, token=token,
                            host='game.brawlstarsgame.com', port=9339)
+    log.info('tcp_job_scheduled guest=%s', token is None)
     workers.submit(execute, job_id, args)
     return redirect(url_for('job_status', job_id=job_id), code=303)
 
@@ -153,8 +163,10 @@ def auth_confirm():
     if auth is None or time.monotonic() - auth['created'] > 600:
         return page(message='Sessão expirada. Pede um novo PIN.', status=400)
     try:
+        log.info('scid_pin_confirmation_requested')
         hi, lo, token = scid_confirm(auth['session'], auth['email'], pin)
     except ScidError as exc:
+        log.warning('scid_pin_confirmation_failed reason=%s', exc)
         return page(message=str(exc), code=auth['code'], email=auth['email'])
     finally:
         auth['session'].close()
