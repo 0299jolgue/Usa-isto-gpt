@@ -1,26 +1,18 @@
-# Entrar na sala de Brawl Stars
+# Brawl Stars: entrada em sala por código
 
-Site Python para ShardCloud. Abre `/`, introduz o código da sala, os dois números do ID da conta e o token. O resultado aparece na página; não é preciso terminal.
+Site Python para ShardCloud. A página solicita email do Supercell ID, PIN de seis dígitos e código da sala. O backend tenta obter a sessão de jogo e enviar `TeamJoinOrCreateRoomMessage` (14371) por TCP.
 
-## ShardCloud
+## Estado
 
-Importa este repositório do GitHub e seleciona a construção por `Dockerfile`. A aplicação escuta na porta indicada por `PORT` (8000 por defeito). A raiz `/` é o site. O Dockerfile copia apenas `client.py` e `server.py`, excluindo os dumps binários do servidor.
+O formulário e a sequência entre pedidos foram testados localmente com respostas simuladas. O login real **ainda não foi validado**. O endpoint antigo do Supercell ID pode não fornecer `bindToken`; se acontecer, o site indica esse bloqueio. A ligação TCP e a entrada na sala também precisam de teste com uma conta real. Não apresentes esta versão como pronta para uso.
 
-O token só fica na memória durante a tentativa. Usa o site através de HTTPS e não publiques o token no GitHub.
+## Execução
 
-## Linha de comando opcional
-
-```sh
-python -m pip install -r requirements.txt
-python client.py CODIGO_DA_SALA
+```bash
+pip install -r requirements.txt
+python server.py
 ```
 
-Para entrar numa conta existente, passa os dados localmente:
+Define `PORT` se necessário. O `Dockerfile` inicia a aplicação na porta configurada pela plataforma.
 
-```sh
-BS_HI=0 BS_LO=123456789 BS_TOKEN='token-da-conta' python client.py CODIGO_DA_SALA
-```
-
-O cliente tenta obter a versão e a fingerprint atualizadas através da resposta de erro `7` do servidor. A chave pública foi extraída do dump em memória; o ID de entrada por código é `14371`. O formato da mensagem foi inferido por desmontagem ARM64. A ligação real aos servidores oficiais e a entrada na sala ainda precisam de ser verificadas, pois este ambiente não consegue resolver `game.brawlstarsgame.com` e não tem credenciais da conta.
-
-Não coloques o token em repositórios ou mensagens públicas.
+O processo guarda a sessão do PIN em memória durante até 10 minutos; uma reinicialização invalida tentativas pendentes. As credenciais não são gravadas em disco.
