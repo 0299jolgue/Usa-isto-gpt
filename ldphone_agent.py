@@ -79,6 +79,36 @@ def open_room(code):
     return 'sent', 'Convite aberto no Android; entrada ainda sem confirmação de rede.'
 
 
+def start_match():
+    # The official game is the TCP client; the agent only presses its Play button.
+    launch = subprocess.run(['su', '-c', shlex.join([
+        '/system/bin/am', 'start', '-a', 'android.intent.action.MAIN',
+        '-c', 'android.intent.category.LAUNCHER', '-p', PACKAGE,
+    ])], capture_output=True, text=True, timeout=30)
+    if launch.returncode:
+        raise RuntimeError((launch.stderr or launch.stdout).strip()[:200])
+    time.sleep(2)
+    foreground = subprocess.run(['su', '-c', 'dumpsys activity activities'],
+                                capture_output=True, text=True, timeout=15)
+    if foreground.returncode or not re.search(r'(?:topResumedActivity|mResumedActivity).*com\.supercell\.brawlstars',
+                                               foreground.stdout):
+        raise RuntimeError('Brawl Stars não está em primeiro plano')
+    display = subprocess.run(['su', '-c', 'dumpsys display'],
+                             capture_output=True, text=True, timeout=15)
+    dimensions = re.search(r'logicalWidth=(\d+).*?logicalHeight=(\d+)', display.stdout)
+    if display.returncode or not dimensions:
+        raise RuntimeError('Não foi possível determinar o tamanho do ecrã')
+    width, height = map(int, dimensions.groups())
+    if width <= height or width < 500 or height < 300:
+        raise RuntimeError(f'O jogo não está em modo horizontal ({width}x{height})')
+    x, y = round(width * .88), round(height * .88)
+    tap = subprocess.run(['su', '-c', f'/system/bin/input tap {x} {y}'],
+                         capture_output=True, text=True, timeout=15)
+    if tap.returncode:
+        raise RuntimeError((tap.stderr or tap.stdout).strip()[:200])
+    return 'tapped', f'Toque em Jogar enviado em {x},{y} ({width}x{height}); confirma a partida no jogo.'
+
+
 def main():
     if len(sys.argv) != 2:
         raise SystemExit('Uso: python ldphone_agent.py https://teu-site.shardweb.app')
@@ -98,10 +128,11 @@ def main():
                 registered = True
                 print('Agente ligado. Deixa o Termux aberto.', flush=True)
             job = request_json(base, '/bridge/next', token=token)
-            if job.get('id') and job.get('code'):
-                print('A abrir sala:', job['code'], flush=True)
+            if job.get('id') and job.get('action') in ('join', 'play'):
+                print('A executar:', job['action'], job.get('code') or '', flush=True)
                 try:
-                    status, detail = open_room(job['code'])
+                    status, detail = (open_room(job['code']) if job['action'] == 'join'
+                                      else start_match())
                 except Exception as exc:
                     status, detail = 'failed', f'{type(exc).__name__}: {exc}'
                 for attempt in range(5):
