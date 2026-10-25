@@ -1,24 +1,21 @@
-# Python 3.11+ / Flask service / official Brawl Stars room invite relay
-"""Queue room invitations for a paired Android agent."""
+# Python 3.12 / Flask / room invite queue for the LDPhone agent
+"""Relay official Brawl Stars room links to a running Android device."""
 
 import hmac
-import os
 import re
 import secrets
 import threading
 import time
 from collections import deque
-from flask import Blueprint, jsonify, make_response, redirect, render_template_string, request
 from urllib.parse import parse_qs, urlparse
+from flask import Blueprint, jsonify, redirect, render_template_string, request
 
 bridge = Blueprint('bridge', __name__)
 _lock = threading.RLock()
 _agent_token = None
-_pair_code = None
-_browser_token = None
+_last_seen = 0.0
 _jobs = {}
 _pending = deque()
-_last_seen = 0.0
 _CODE = re.compile(r'^X[QWERTYUPASDFGHJKLZCVBNM23456789]{2,12}$')
 _LABELS = {
     'queued': 'À espera do LDPhone',
@@ -31,25 +28,13 @@ _PAGE = '''<!doctype html><html lang="pt"><meta name="viewport" content="width=d
 <title>Entrar na sala</title><style>body{font:17px system-ui;max-width:520px;margin:2rem auto;padding:0 1rem}
 input,button{font:inherit;padding:.7rem;margin:.35rem 0;width:100%;box-sizing:border-box}
 p{line-height:1.5}pre{white-space:pre-wrap;word-break:break-all;background:#eee;padding:1rem}</style>
-<h1>Entrar na sala</h1>{% if paired %}<p>LDPhone: {{ 'ligado' if online else 'sem ligação recente' }}</p>
+<h1>Entrar na sala</h1><p>LDPhone: {{ 'ligado' if online else 'desligado' }}</p>
+{% if not online %}<p>Uma vez no Termux do LDPhone, executa:</p>
+<pre>curl -fsSL {{ base }}/agent.py -o /sdcard/Download/ldphone_agent.py &amp;&amp; python /sdcard/Download/ldphone_agent.py {{ base }}</pre>
+<p>Deixa o agente a correr. Esta página mostra “ligado” automaticamente.</p>
+<script>setInterval(async()=>{try{let r=await fetch('/bridge/online');if((await r.json()).online)location.reload()}catch(e){}},3000)</script>{% endif %}
 <form method="post" action="/bridge/join"><input name="code" placeholder="Código ou link da sala" required>
-<button>Entrar com a conta do LDPhone</button></form>
-{% else %}<p>No Termux do LDPhone, executa cada comando separado:</p>
-<pre>curl -fsSL {{ base }}/agent.py -o /sdcard/Download/ldphone_agent.py</pre>
-<pre>python /sdcard/Download/ldphone_agent.py {{ base }}</pre>
-<p>Depois escreve aqui o código de emparelhamento que o agente mostra.</p>
-<form method="post" action="/bridge/pair"><input name="pair_code" placeholder="Código de emparelhamento" required>
-<button>Emparelhar</button></form>{% endif %}{% if message %}<p>{{ message }}</p>{% endif %}</html>'''
-
-
-def _paired():
-    token = request.cookies.get('bridge_session', '')
-    return bool(_browser_token and hmac.compare_digest(token, _browser_token))
-
-
-def _agent():
-    token = request.headers.get('Authorization', '').removeprefix('Bearer ')
-    return bool(_agent_token and hmac.compare_digest(token, _agent_token))
+<button>Entrar com a conta do LDPhone</button></form></html>'''
 
 
 def normalize_code(value):
@@ -65,52 +50,42 @@ def normalize_code(value):
     return code
 
 
+def _agent():
+    token = request.headers.get('Authorization', '').removeprefix('Bearer ')
+    return bool(_agent_token and hmac.compare_digest(token, _agent_token))
+
+
 @bridge.get('/bridge')
 def home():
     with _lock:
-        return render_template_string(_PAGE, paired=_paired(),
-                                      online=time.monotonic() - _last_seen < 15,
-                                      base='https://' + request.host.split(':', 1)[0],
-                                      message=request.args.get('message', ''))
+        return render_template_string(_PAGE, online=time.monotonic() - _last_seen < 15,
+                                      base='https://' + request.host.split(':', 1)[0])
+
+
+@bridge.get('/bridge/online')
+def online():
+    with _lock:
+        return jsonify(online=time.monotonic() - _last_seen < 15)
 
 
 @bridge.post('/bridge/register')
 def register():
-    global _agent_token, _pair_code, _browser_token, _last_seen
+    global _agent_token, _last_seen
     data = request.get_json(silent=True) or {}
     token = str(data.get('token', ''))
-    pair_code = str(data.get('pair_code', ''))
-    if len(token) < 32 or len(token) > 128 or not re.fullmatch(r'[A-Z0-9]{8}', pair_code):
+    if not 32 <= len(token) <= 128:
         return jsonify(error='invalid registration'), 400
     with _lock:
         if _agent_token and not hmac.compare_digest(token, _agent_token) and time.monotonic() - _last_seen < 30:
-            return jsonify(error='agent already registered'), 409
+            return jsonify(error='another agent already active'), 409
         if _agent_token and not hmac.compare_digest(token, _agent_token):
-            _browser_token = None
             _pending.clear()
-        _agent_token, _pair_code, _last_seen = token, pair_code, time.monotonic()
-        return jsonify(ok=True)
-
-
-@bridge.post('/bridge/pair')
-def pair():
-    global _browser_token, _pair_code
-    code = request.form.get('pair_code', '').strip().upper()
-    with _lock:
-        if not _pair_code or not hmac.compare_digest(code, _pair_code):
-            return redirect('/bridge?message=C%C3%B3digo+incorreto', code=303)
-        _pair_code = None
-        _browser_token = secrets.token_urlsafe(32)
-        response = make_response(redirect('/bridge', code=303))
-        response.set_cookie('bridge_session', _browser_token, httponly=True, secure=request.is_secure,
-                            samesite='Lax', max_age=86400)
-        return response
+        _agent_token, _last_seen = token, time.monotonic()
+    return jsonify(ok=True)
 
 
 @bridge.post('/bridge/join')
 def join():
-    if not _paired():
-        return jsonify(error='pair first'), 403
     try:
         code = normalize_code(request.form.get('code', ''))
     except ValueError:
@@ -126,8 +101,6 @@ def join():
 
 @bridge.get('/bridge/job/<job_id>')
 def job_page(job_id):
-    if not _paired():
-        return jsonify(error='pair first'), 403
     with _lock:
         job = _jobs.get(job_id)
         if not job:
@@ -143,8 +116,6 @@ document.getElementById('status').textContent=j.label+(j.detail?' — '+j.detail
 
 @bridge.get('/bridge/status/<job_id>')
 def status(job_id):
-    if not _paired():
-        return jsonify(error='pair first'), 403
     with _lock:
         job = _jobs.get(job_id)
         if not job:
@@ -177,13 +148,13 @@ def result(job_id):
     if not _agent():
         return jsonify(error='unauthorized'), 401
     data = request.get_json(silent=True) or {}
-    status = data.get('status')
-    if status not in ('sent', 'observed', 'failed'):
+    state = data.get('status')
+    if state not in ('sent', 'observed', 'failed'):
         return jsonify(error='invalid status'), 400
     with _lock:
         job = _jobs.get(job_id)
         if not job:
             return jsonify(error='unknown job'), 404
-        job['status'] = status
+        job['status'] = state
         job['detail'] = str(data.get('detail', ''))[:200]
     return jsonify(ok=True)
