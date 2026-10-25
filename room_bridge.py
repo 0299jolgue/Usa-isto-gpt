@@ -9,6 +9,7 @@ import threading
 import time
 from collections import deque
 from flask import Blueprint, jsonify, make_response, redirect, render_template_string, request
+from urllib.parse import parse_qs, urlparse
 
 bridge = Blueprint('bridge', __name__)
 _lock = threading.RLock()
@@ -19,11 +20,18 @@ _jobs = {}
 _pending = deque()
 _last_seen = 0.0
 _CODE = re.compile(r'^X[QWERTYUPASDFGHJKLZCVBNM23456789]{2,12}$')
+_LABELS = {
+    'queued': 'À espera do LDPhone',
+    'running': 'A abrir o convite',
+    'sent': 'Convite aberto; entrada ainda não confirmada',
+    'observed': 'Pedido de entrada enviado pelo jogo; confirma a sala no ecrã',
+    'failed': 'Não foi possível abrir o convite',
+}
 _PAGE = '''<!doctype html><html lang="pt"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Entrar na sala</title><style>body{font:17px system-ui;max-width:520px;margin:2rem auto;padding:0 1rem}
 input,button{font:inherit;padding:.7rem;margin:.35rem 0;width:100%;box-sizing:border-box}p{line-height:1.5}</style>
 <h1>Entrar na sala</h1>{% if paired %}<p>LDPhone: {{ 'ligado' if online else 'sem ligação recente' }}</p>
-<form method="post" action="/bridge/join"><input name="code" placeholder="Código da sala, ex. XSMUZSLL" required>
+<form method="post" action="/bridge/join"><input name="code" placeholder="Código ou link da sala" required>
 <button>Entrar com a conta do LDPhone</button></form>
 {% else %}<p>Inicia o agente no LDPhone e escreve aqui o código de emparelhamento que ele mostra.</p>
 <form method="post" action="/bridge/pair"><input name="pair_code" placeholder="Código de emparelhamento" required>
@@ -38,6 +46,19 @@ def _paired():
 def _agent():
     token = request.headers.get('Authorization', '').removeprefix('Bearer ')
     return bool(_agent_token and hmac.compare_digest(token, _agent_token))
+
+
+def normalize_code(value):
+    value = value.strip()
+    if value.startswith('https://'):
+        parsed = urlparse(value)
+        if parsed.hostname != 'link.brawlstars.com' or not parsed.path.startswith('/invite/gameroom/'):
+            raise ValueError('invalid room link')
+        value = parse_qs(parsed.query).get('tag', [''])[0]
+    code = value.lstrip('#').upper()
+    if not _CODE.fullmatch(code):
+        raise ValueError('invalid room code')
+    return code
 
 
 @bridge.get('/bridge')
@@ -84,8 +105,9 @@ def pair():
 def join():
     if not _paired():
         return jsonify(error='pair first'), 403
-    code = request.form.get('code', '').strip().lstrip('#').upper()
-    if not _CODE.fullmatch(code):
+    try:
+        code = normalize_code(request.form.get('code', ''))
+    except ValueError:
         return jsonify(error='invalid room code'), 400
     with _lock:
         if len(_pending) >= 4:
@@ -104,11 +126,12 @@ def job_page(job_id):
         job = _jobs.get(job_id)
         if not job:
             return jsonify(error='unknown job'), 404
-        code, status = job['code'], job['status']
+        code, state = job['code'], job['status']
+        label = _LABELS.get(state, state)
     return f'''<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><h1>Sala {code}</h1>
-<p id="status">{status}</p><a href="/bridge">Voltar</a><script>
+<p id="status">{label}</p><a href="/bridge">Voltar</a><script>
 setInterval(async()=>{{let r=await fetch('/bridge/status/{job_id}');if(r.ok){{let j=await r.json();
-document.getElementById('status').textContent=j.status+(j.detail?' — '+j.detail:'');}}}},2000)
+document.getElementById('status').textContent=j.label+(j.detail?' — '+j.detail:'');}}}},2000)
 </script>'''
 
 
@@ -123,7 +146,8 @@ def status(job_id):
         if job['status'] in ('queued', 'running') and time.monotonic() - job['created'] > 90:
             job['status'] = 'failed'
             job['detail'] = 'Tempo esgotado sem confirmação do agente.'
-        return jsonify(status=job['status'], detail=job.get('detail', ''))
+        return jsonify(status=job['status'], label=_LABELS.get(job['status'], job['status']),
+                       detail=job.get('detail', ''))
 
 
 @bridge.get('/bridge/next')
