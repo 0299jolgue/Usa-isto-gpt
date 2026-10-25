@@ -121,6 +121,7 @@ def job_page(job_id):
         action, state = job['action'], job['status']
         title = 'Sala ' + job['code'] if action == 'join' else 'Iniciar partida'
         label = ('A tocar em Jogar' if state == 'running' and action == 'play'
+                 else 'Não foi possível iniciar a partida' if state == 'failed' and action == 'play'
                  else _LABELS.get(state, state))
         if state == 'queued' and time.monotonic() - _last_seen >= 15:
             label = 'LDPhone desligado; inicia o agente no Termux'
@@ -141,6 +142,7 @@ def status(job_id):
             job['status'] = 'failed'
             job['detail'] = 'Tempo esgotado sem confirmação do agente.'
         label = ('A tocar em Jogar' if job['status'] == 'running' and job['action'] == 'play'
+                 else 'Não foi possível iniciar a partida' if job['status'] == 'failed' and job['action'] == 'play'
                  else _LABELS.get(job['status'], job['status']))
         if job['status'] == 'queued' and time.monotonic() - _last_seen >= 15:
             label = 'LDPhone desligado; inicia o agente no Termux'
