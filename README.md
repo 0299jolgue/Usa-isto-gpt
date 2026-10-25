@@ -1,18 +1,24 @@
-# Brawl Stars: entrada em sala por código
+# Entrar numa sala do Brawl Stars com o LDPhone
 
-Site Python para ShardCloud. A página aceita email do Supercell ID e PIN ou tenta criar uma conta convidada. Ambas as opções recebem o código da sala e tentam enviar `TeamJoinOrCreateRoomMessage` (14371) por TCP. Para alojamento Python na ShardCloud, `main.py` e `.shardcloud` são os ficheiros de arranque obrigatórios.
+O site coloca códigos de sala numa fila. Um agente Python no Termux do LDPhone abre o convite oficial no Brawl Stars instalado. O próprio jogo trata do login da conta convidada e da ligação TCP ao servidor. O site mostra se o Android abriu o convite e se foi observado o pedido de entrada `14358` na rede; a presença na sala deve ser confirmada no jogo.
 
-## Estado
+## Servidor
 
-Os formulários e a sequência entre pedidos foram testados localmente com respostas simuladas. O login real **ainda não foi validado**. A conta convidada reproduz o ID `0:0` e o token nulo do antigo cliente Java, mas o comportamento no servidor atual é desconhecido. O endpoint do Supercell ID pode não fornecer `bindToken`. A ligação TCP e a entrada na sala precisam de teste real.
+Importar este repositório para a ShardCloud. `main.py` inicia Flask com Waitress em `0.0.0.0` e na porta indicada por `PORT`, ou 80. O endereço inicial redireciona para `/bridge`.
 
-## Execução
+## LDPhone
 
-```bash
-pip install -r requirements.txt
-python main.py
+Com Brawl Stars oficial instalado e uma conta convidada já no menu, executar no Termux:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/0299jolgue/Usa-isto-gpt/main/ldphone_agent.py -o /sdcard/Download/ldphone_agent.py
+python /sdcard/Download/ldphone_agent.py https://brawl-stars-room-join.shardweb.app
 ```
 
-Define `PORT` se necessário. O `Dockerfile` inicia a aplicação na porta configurada pela plataforma.
+O agente mostra um código de emparelhamento. Introduzi-lo em `/bridge` no navegador. O Termux tem de continuar a executar o agente. Depois de inserir o código da sala no site, o agente abre o convite oficial no LDPhone. Se `tcpdump` estiver instalado, tenta confirmar que o jogo enviou a mensagem `14358`.
 
-O processo guarda a sessão do PIN em memória durante até 10 minutos; uma reinicialização invalida tentativas pendentes. As credenciais não são gravadas em disco.
+## Estado dos testes
+
+O serviço foi testado localmente com Waitress: arranque, `/health`, emparelhamento, fila, consulta pelo agente e atualização de estado. O comando Android foi verificado por simulação. Falta confirmar o convite no LDPhone e o serviço publicado na ShardCloud.
+
+O cliente TCP independente em `client.py` continua experimental e não participa no fluxo de `/bridge`.
