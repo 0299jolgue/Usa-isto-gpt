@@ -48,8 +48,8 @@ def open_room(code):
         raise ValueError('invalid room code')
     url = f'https://link.brawlstars.com/invite/gameroom/pt?tag={code}'
     capture = observe_join()
-    command = ['am', 'start', '-a', 'android.intent.action.VIEW', '-d', url, '-p', PACKAGE]
-    action = subprocess.run(command, capture_output=True, text=True, timeout=15)
+    command = ['/system/bin/am', 'start', '-a', 'android.intent.action.VIEW', '-d', url, '-p', PACKAGE]
+    action = subprocess.run(['su', '-c', shlex.join(command)], capture_output=True, text=True, timeout=15)
     if action.returncode:
         if capture:
             capture.terminate()
