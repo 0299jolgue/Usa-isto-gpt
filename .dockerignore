@@ -2,6 +2,8 @@
 !client.py
 !scid.py
 !server.py
+!room_bridge.py
+!ldphone_agent.py
 !main.py
 !requirements.txt
 !Dockerfile
