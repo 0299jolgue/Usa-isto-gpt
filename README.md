@@ -11,7 +11,7 @@ Importar este repositório para a ShardCloud. `main.py` inicia Flask com Waitres
 Com Brawl Stars oficial instalado e uma conta convidada já no menu, executar no Termux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/0299jolgue/Usa-isto-gpt/main/ldphone_agent.py -o /sdcard/Download/ldphone_agent.py
+curl -fsSL https://brawl-stars-room-join.shardweb.app/agent.py -o /sdcard/Download/ldphone_agent.py
 python /sdcard/Download/ldphone_agent.py https://brawl-stars-room-join.shardweb.app
 ```
 
@@ -21,4 +21,3 @@ O agente mostra um código de emparelhamento. Introduzi-lo em `/bridge` no naveg
 
 O serviço foi testado localmente com Waitress: arranque, `/health`, emparelhamento, fila, consulta pelo agente e atualização de estado. O comando Android foi verificado por simulação. Falta confirmar o convite no LDPhone e o serviço publicado na ShardCloud.
 
-O cliente TCP independente em `client.py` continua experimental e não participa no fluxo de `/bridge`.
