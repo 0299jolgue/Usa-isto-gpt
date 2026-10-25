@@ -29,11 +29,15 @@ _LABELS = {
 }
 _PAGE = '''<!doctype html><html lang="pt"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Entrar na sala</title><style>body{font:17px system-ui;max-width:520px;margin:2rem auto;padding:0 1rem}
-input,button{font:inherit;padding:.7rem;margin:.35rem 0;width:100%;box-sizing:border-box}p{line-height:1.5}</style>
+input,button{font:inherit;padding:.7rem;margin:.35rem 0;width:100%;box-sizing:border-box}
+p{line-height:1.5}pre{white-space:pre-wrap;word-break:break-all;background:#eee;padding:1rem}</style>
 <h1>Entrar na sala</h1>{% if paired %}<p>LDPhone: {{ 'ligado' if online else 'sem ligação recente' }}</p>
 <form method="post" action="/bridge/join"><input name="code" placeholder="Código ou link da sala" required>
 <button>Entrar com a conta do LDPhone</button></form>
-{% else %}<p>Inicia o agente no LDPhone e escreve aqui o código de emparelhamento que ele mostra.</p>
+{% else %}<p>No Termux do LDPhone, executa cada comando separado:</p>
+<pre>curl -fsSL {{ base }}/agent.py -o /sdcard/Download/ldphone_agent.py</pre>
+<pre>python /sdcard/Download/ldphone_agent.py {{ base }}</pre>
+<p>Depois escreve aqui o código de emparelhamento que o agente mostra.</p>
 <form method="post" action="/bridge/pair"><input name="pair_code" placeholder="Código de emparelhamento" required>
 <button>Emparelhar</button></form>{% endif %}{% if message %}<p>{{ message }}</p>{% endif %}</html>'''
 
@@ -65,7 +69,8 @@ def normalize_code(value):
 def home():
     with _lock:
         return render_template_string(_PAGE, paired=_paired(),
-                                      online=time.monotonic() - _last_seen < 15, message=request.args.get('message', ''))
+                                      online=time.monotonic() - _last_seen < 15, base=request.host_url.rstrip('/'),
+                                      message=request.args.get('message', ''))
 
 
 @bridge.post('/bridge/register')
