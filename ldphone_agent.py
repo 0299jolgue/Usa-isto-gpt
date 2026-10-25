@@ -96,6 +96,9 @@ def start_match():
     display = subprocess.run(['su', '-c', 'dumpsys display'],
                              capture_output=True, text=True, timeout=15)
     dimensions = re.search(r'logicalWidth=(\d+).*?logicalHeight=(\d+)', display.stdout)
+    if not dimensions:
+        dimensions = re.search(r'(?:(?:mBase|mOverride)?DisplayInfo=DisplayInfo\{)[^\n]*?\b(\d+) x (\d+)\b',
+                               display.stdout)
     if display.returncode or not dimensions:
         raise RuntimeError('Não foi possível determinar o tamanho do ecrã')
     width, height = map(int, dimensions.groups())
