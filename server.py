@@ -2,6 +2,7 @@
 import os
 import re
 import logging
+import hmac
 import secrets
 import threading
 import time
@@ -9,13 +10,15 @@ from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import requests
-from flask import Flask, redirect, render_template_string, request, url_for
+from flask import Flask, jsonify, redirect, render_template_string, request, send_file, url_for
 from waitress import serve
 
 from client import Version, run
 from scid import ScidError, confirm as scid_confirm, start as scid_start
+from room_bridge import bridge
 
 app = Flask(__name__)
+app.register_blueprint(bridge)
 log = logging.getLogger('brawl-room')
 lock = threading.Lock()
 pending = {}
@@ -41,8 +44,10 @@ a{color:#9cc8ff}
 <p>Introduz o código da sala e o email da conta Supercell ID.</p>
 <form action="/auth/start" method="post">
 <label for="code">Código da sala</label><input id="code" name="code" maxlength="64" required value="{{ code }}" autocapitalize="characters">
+{% if not vercel_mode %}
 <label for="email">Email</label><input id="email" name="email" type="email" required value="{{ email }}" autocomplete="email">
 <button type="submit">Enviar PIN</button>
+{% endif %}
 <button type="submit" formaction="/guest" formmethod="post" formnovalidate>Entrar com conta convidada</button></form>
 {% elif step == 'pin' %}
 <p>Introduz o PIN enviado para {{ email }}.</p>
@@ -50,7 +55,7 @@ a{color:#9cc8ff}
 <label for="pin">PIN de seis dígitos</label><input id="pin" name="pin" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" required autocomplete="one-time-code">
 <button type="submit">Confirmar e entrar</button></form>
 {% else %}
-<p>A tentar entrar na sala. Esta página atualiza automaticamente.</p>
+<p>Resultado da tentativa de entrada na sala.</p>
 {% endif %}
 {% if message %}<div class="message" role="status">{{ message }}</div>{% endif %}
 {% if step != 'email' %}<p><a href="/">Começar de novo</a></p>{% endif %}
@@ -59,7 +64,8 @@ a{color:#9cc8ff}
 
 def page(step='email', message='', code='', email='', challenge='', refresh=False, status=200):
     return render_template_string(PAGE, step=step, message=message, code=code,
-                                  email=email, challenge=challenge, refresh=refresh), status
+                                  email=email, challenge=challenge, refresh=refresh,
+                                  vercel_mode=bool(os.environ.get('VERCEL'))), status
 
 
 @app.after_request
@@ -73,12 +79,32 @@ def no_cache(response):
 
 @app.get('/')
 def index():
-    return page()
+    return redirect('/bridge', code=302)
 
 
 @app.get('/health')
 def health():
     return 'ok', 200, {'Content-Type': 'text/plain; charset=utf-8'}
+
+
+@app.get('/tools/dump_libg_tail.py')
+def dump_helper():
+    return send_file('dump_libg_tail.py', mimetype='text/x-python; charset=utf-8')
+
+
+@app.get('/tools/dump_libg_code.py')
+def dump_code_helper():
+    return send_file('dump_libg_code.py', mimetype='text/x-python; charset=utf-8')
+
+
+@app.get('/tools/brawl_spy.py')
+def brawl_spy_helper():
+    return send_file('brawl_spy.py', mimetype='text/x-python; charset=utf-8')
+
+
+@app.get('/tools/capture_login.py')
+def capture_helper():
+    return 'Captura suspensa.', 410, {'Content-Type': 'text/plain; charset=utf-8'}
 
 
 @app.post('/auth/start')
@@ -153,8 +179,58 @@ def guest_join():
     code = request.form.get('code', '').strip().lstrip('#').upper()
     if not code or len(code) > 64 or any(not (c.isascii() and c.isalnum()) for c in code):
         return page(message='Código da sala inválido.', code=code, status=400)
+    if os.environ.get('VERCEL'):
+        result = probe(code)
+        return page(step='status', message='\n'.join(result['events']) or 'Sem resposta do servidor.')
     result = schedule_join(code, 0, 0, None)
     return result or page(message='Já existem duas tentativas em curso. Aguarda um momento.', code=code, status=429)
+
+
+def probe(code, key_version=None, pad_bytes=0, crypto_mode='v3'):
+    args = SimpleNamespace(code=code, hi=0, lo=0, token=None,
+                           host='game.brawlstarsgame.com', port=9339,
+                           deadline=time.monotonic() + 18, pad_bytes=pad_bytes,
+                           crypto_mode=crypto_mode)
+    events = []
+    version = Version()
+    if key_version is not None:
+        version.key_version = key_version
+    start = time.monotonic()
+    accepted = False
+    try:
+        for _ in range(2):
+            if run(args, version, emit=lambda *parts: events.append(' '.join(map(str, parts)))):
+                accepted = True
+                break
+    except Exception as exc:
+        log.exception('vercel_guest_probe_failed')
+        events.append(f'Erro: {type(exc).__name__}: {exc}')
+    return {'ok': accepted, 'events': events, 'elapsed_seconds': round(time.monotonic() - start, 2),
+            'client_version': f'{version.major}.{version.minor}.{version.build}', 'protocol': 2,
+            'key_version': version.key_version, 'asset_sha': version.sha}
+
+
+@app.get('/api/probe')
+def api_probe():
+    expected = os.environ.get('PROBE_KEY', '')
+    supplied = request.args.get('key', '')
+    if not expected or not hmac.compare_digest(supplied, expected):
+        return jsonify({'error': 'unauthorized'}), 401
+    code = request.args.get('code', '').strip().lstrip('#').upper()
+    if not code or len(code) > 64 or any(not (c.isascii() and c.isalnum()) for c in code):
+        return jsonify({'error': 'invalid_room_code'}), 400
+    key_version = request.args.get('key_version')
+    if key_version is not None:
+        if not key_version.isdecimal() or not 40 <= int(key_version) <= 70:
+            return jsonify({'error': 'invalid_key_version'}), 400
+        key_version = int(key_version)
+    pad_bytes = request.args.get('pad_bytes', '0')
+    if not pad_bytes.isdecimal() or not 0 <= int(pad_bytes) <= 700:
+        return jsonify({'error': 'invalid_pad_bytes'}), 400
+    crypto_mode = request.args.get('crypto_mode', 'v3')
+    if crypto_mode not in ('v3', 'salsa20'):
+        return jsonify({'error': 'invalid_crypto_mode'}), 400
+    return jsonify(probe(code, key_version, int(pad_bytes), crypto_mode))
 
 
 @app.post('/auth/confirm')
