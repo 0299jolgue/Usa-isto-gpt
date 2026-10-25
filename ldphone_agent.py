@@ -48,7 +48,8 @@ def open_room(code):
         raise ValueError('invalid room code')
     url = f'https://link.brawlstars.com/invite/gameroom/pt?tag={code}'
     capture = observe_join()
-    command = ['/system/bin/am', 'start', '-a', 'android.intent.action.VIEW', '-d', url, '-p', PACKAGE]
+    command = ['/system/bin/am', 'start', '-W', '-a', 'android.intent.action.VIEW',
+               '-c', 'android.intent.category.BROWSABLE', '-d', url, '-p', PACKAGE]
     action = subprocess.run(['su', '-c', shlex.join(command)], capture_output=True, text=True, timeout=15)
     if action.returncode:
         if capture:
@@ -92,8 +93,16 @@ def main():
                     status, detail = open_room(job['code'])
                 except Exception as exc:
                     status, detail = 'failed', f'{type(exc).__name__}: {exc}'
-                request_json(base, '/bridge/result/' + job['id'], token=token,
-                             payload={'status': status, 'detail': detail})
+                for attempt in range(5):
+                    try:
+                        request_json(base, '/bridge/result/' + job['id'], token=token,
+                                     payload={'status': status, 'detail': detail})
+                        break
+                    except (HTTPError, URLError, TimeoutError, OSError, ValueError):
+                        if attempt == 4:
+                            print('Falha ao enviar o resultado ao site.', flush=True)
+                        else:
+                            time.sleep(2)
                 print(detail, flush=True)
             time.sleep(2)
         except HTTPError as exc:
@@ -101,7 +110,7 @@ def main():
                 registered = False
             print('HTTP:', exc.code, flush=True)
             time.sleep(5)
-        except (URLError, TimeoutError, OSError) as exc:
+        except (URLError, TimeoutError, OSError, ValueError) as exc:
             print('Ligação:', exc, flush=True)
             time.sleep(5)
 
