@@ -69,7 +69,8 @@ def normalize_code(value):
 def home():
     with _lock:
         return render_template_string(_PAGE, paired=_paired(),
-                                      online=time.monotonic() - _last_seen < 15, base=request.host_url.rstrip('/'),
+                                      online=time.monotonic() - _last_seen < 15,
+                                      base='https://' + request.host.split(':', 1)[0],
                                       message=request.args.get('message', ''))
 
 
