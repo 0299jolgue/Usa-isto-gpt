@@ -82,12 +82,12 @@ def open_room(code):
 def start_match():
     # The official game is the TCP client; the agent only presses its Play button.
     launch = subprocess.run(['su', '-c', shlex.join([
-        '/system/bin/am', 'start', '-a', 'android.intent.action.MAIN',
-        '-c', 'android.intent.category.LAUNCHER', '-p', PACKAGE,
+        '/system/bin/monkey', '-p', PACKAGE, '-c',
+        'android.intent.category.LAUNCHER', '1',
     ])], capture_output=True, text=True, timeout=30)
     if launch.returncode:
         raise RuntimeError((launch.stderr or launch.stdout).strip()[:200])
-    time.sleep(2)
+    time.sleep(4)
     foreground = subprocess.run(['su', '-c', 'dumpsys activity activities'],
                                 capture_output=True, text=True, timeout=15)
     if foreground.returncode or not re.search(r'(?:topResumedActivity|mResumedActivity).*com\.supercell\.brawlstars',
