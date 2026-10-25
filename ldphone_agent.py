@@ -50,7 +50,7 @@ def open_room(code):
     capture = observe_join()
     command = ['/system/bin/am', 'start', '-W', '-a', 'android.intent.action.VIEW',
                '-c', 'android.intent.category.BROWSABLE', '-d', url, '-p', PACKAGE]
-    action = subprocess.run(['su', '-c', shlex.join(command)], capture_output=True, text=True, timeout=15)
+    action = subprocess.run(['su', '-c', shlex.join(command)], capture_output=True, text=True, timeout=45)
     if action.returncode:
         if capture:
             capture.terminate()
