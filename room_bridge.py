@@ -23,6 +23,7 @@ _LABELS = {
     'sent': 'Convite aberto; entrada ainda não confirmada',
     'observed': 'Pedido de entrada enviado pelo jogo; confirma a sala no ecrã',
     'failed': 'Não foi possível abrir o convite',
+    'tapped': 'Toque em Jogar enviado ao LDPhone; confirma no jogo',
 }
 _PAGE = '''<!doctype html><html lang="pt"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Entrar na sala</title><style>body{font:17px system-ui;max-width:520px;margin:2rem auto;padding:0 1rem}
@@ -34,7 +35,8 @@ p{line-height:1.5}pre{white-space:pre-wrap;word-break:break-all;background:#eee;
 <p>Deixa o agente a correr. Esta página mostra “ligado” automaticamente.</p>
 <script>setInterval(async()=>{try{let r=await fetch('/bridge/online');if((await r.json()).online)location.reload()}catch(e){}},3000)</script>{% endif %}
 <form method="post" action="/bridge/join"><input name="code" placeholder="Código ou link da sala" required>
-<button>Entrar com a conta do LDPhone</button></form></html>'''
+<button>Entrar com a conta do LDPhone</button></form>
+<form method="post" action="/bridge/play"><button>Iniciar partida no LDPhone</button></form></html>'''
 
 
 def normalize_code(value):
@@ -94,7 +96,18 @@ def join():
         if len(_pending) >= 4:
             return jsonify(error='queue full'), 429
         job_id = secrets.token_urlsafe(12)
-        _jobs[job_id] = {'code': code, 'status': 'queued', 'created': time.monotonic()}
+        _jobs[job_id] = {'action': 'join', 'code': code, 'status': 'queued', 'created': time.monotonic()}
+        _pending.append(job_id)
+    return redirect(f'/bridge/job/{job_id}', code=303)
+
+
+@bridge.post('/bridge/play')
+def play():
+    with _lock:
+        if len(_pending) >= 4:
+            return jsonify(error='queue full'), 429
+        job_id = secrets.token_urlsafe(12)
+        _jobs[job_id] = {'action': 'play', 'status': 'queued', 'created': time.monotonic()}
         _pending.append(job_id)
     return redirect(f'/bridge/job/{job_id}', code=303)
 
@@ -105,11 +118,13 @@ def job_page(job_id):
         job = _jobs.get(job_id)
         if not job:
             return jsonify(error='unknown job'), 404
-        code, state = job['code'], job['status']
-        label = _LABELS.get(state, state)
+        action, state = job['action'], job['status']
+        title = 'Sala ' + job['code'] if action == 'join' else 'Iniciar partida'
+        label = ('A tocar em Jogar' if state == 'running' and action == 'play'
+                 else _LABELS.get(state, state))
         if state == 'queued' and time.monotonic() - _last_seen >= 15:
             label = 'LDPhone desligado; inicia o agente no Termux'
-    return f'''<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><h1>Sala {code}</h1>
+    return f'''<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><h1>{title}</h1>
 <p id="status">{label}</p><a href="/bridge">Voltar</a><script>
 setInterval(async()=>{{let r=await fetch('/bridge/status/{job_id}');if(r.ok){{let j=await r.json();
 document.getElementById('status').textContent=j.label+(j.detail?' — '+j.detail:'');}}}},2000)
@@ -125,7 +140,8 @@ def status(job_id):
         if job['status'] in ('queued', 'running') and time.monotonic() - job['created'] > 90:
             job['status'] = 'failed'
             job['detail'] = 'Tempo esgotado sem confirmação do agente.'
-        label = _LABELS.get(job['status'], job['status'])
+        label = ('A tocar em Jogar' if job['status'] == 'running' and job['action'] == 'play'
+                 else _LABELS.get(job['status'], job['status']))
         if job['status'] == 'queued' and time.monotonic() - _last_seen >= 15:
             label = 'LDPhone desligado; inicia o agente no Termux'
         return jsonify(status=job['status'], label=label,
@@ -144,7 +160,7 @@ def next_job():
             job = _jobs.get(job_id)
             if job and job['status'] == 'queued':
                 job['status'] = 'running'
-                return jsonify(id=job_id, code=job['code'])
+                return jsonify(id=job_id, action=job['action'], code=job.get('code'))
     return jsonify(job=None)
 
 
@@ -154,7 +170,7 @@ def result(job_id):
         return jsonify(error='unauthorized'), 401
     data = request.get_json(silent=True) or {}
     state = data.get('status')
-    if state not in ('sent', 'observed', 'failed'):
+    if state not in ('sent', 'observed', 'tapped', 'failed'):
         return jsonify(error='invalid status'), 400
     with _lock:
         job = _jobs.get(job_id)
