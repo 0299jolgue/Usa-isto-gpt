@@ -2,6 +2,7 @@
 """Open queued official room invitations in the installed game app."""
 
 import json
+import http.client
 import os
 from pathlib import Path
 import re
@@ -112,6 +113,67 @@ def start_match():
     return 'tapped', f'Toque em Jogar enviado em {x},{y} ({width}x{height}); confirma a partida no jogo.'
 
 
+def _ai_post(connection, path, token, body=b'', content_type='application/octet-stream'):
+    connection.request('POST', path, body=body,
+                       headers={'Authorization': 'Bearer ' + token,
+                                'Content-Type': content_type,
+                                'Content-Length': str(len(body))})
+    response = connection.getresponse()
+    raw = response.read()
+    if response.status >= 400:
+        raise RuntimeError(f'{path}: HTTP {response.status}: {raw[:160].decode("utf-8", "replace")}')
+    return json.loads(raw)
+
+
+def run_ai(base, token):
+    host = urlparse(base).netloc
+    connection = http.client.HTTPSConnection(host, timeout=120)
+    frames = 0
+    actions = 0
+    cycles = []
+    try:
+        _ai_post(connection, '/ai/ready', token)
+        start_match()
+        time.sleep(6)
+        deadline = time.monotonic() + 20
+        connection.timeout = 15
+        while time.monotonic() < deadline:
+            begin = time.monotonic()
+            shot = subprocess.run(['su', '-c', '/system/bin/screencap -p'],
+                                  capture_output=True, timeout=5)
+            if shot.returncode or not shot.stdout.startswith(b'\x89PNG\r\n\x1a\n'):
+                raise RuntimeError('Captura do ecrã falhou')
+            data = _ai_post(connection, '/ai/step', token, shot.stdout, 'image/png')
+            action = data['action']
+            if action['kind'] in ('attack', 'move'):
+                width, height = data['width'], data['height']
+                coords = [int(action[key]) for key in ('x1', 'y1', 'x2', 'y2')]
+                if not (0 <= coords[0] < width and 0 <= coords[2] < width and
+                        0 <= coords[1] < height and 0 <= coords[3] < height):
+                    raise RuntimeError('A IA devolveu coordenadas fora do ecrã')
+                duration = max(80, min(250, int(action['duration_ms'])))
+                command = ['/system/bin/input', 'touchscreen', 'swipe',
+                           *(str(n) for n in coords), str(duration)]
+                gesture = subprocess.run(['su', '-c', shlex.join(command)],
+                                         capture_output=True, text=True, timeout=5)
+                if gesture.returncode:
+                    raise RuntimeError('Gesto falhou: ' + gesture.stderr.strip()[:100])
+                actions += 1
+            frames += 1
+            elapsed = (time.monotonic() - begin) * 1000
+            cycles.append(elapsed)
+            print(f'IA frame={frames} ação={action["kind"]} ciclo={elapsed:.0f}ms '
+                  f'servidor={data["timings_ms"]["total"]}ms', flush=True)
+    finally:
+        connection.close()
+    if not cycles:
+        raise RuntimeError('Não foi analisada nenhuma imagem')
+    ordered = sorted(cycles)
+    median = ordered[len(ordered)//2]
+    p90 = ordered[min(len(ordered)-1, int(len(ordered)*.9))]
+    return 'complete', f'{frames} imagens, {actions} gestos; ciclo mediano {median:.0f} ms, P90 {p90:.0f} ms.'
+
+
 def main():
     if len(sys.argv) != 2:
         raise SystemExit('Uso: python ldphone_agent.py https://teu-site.shardweb.app')
@@ -131,10 +193,11 @@ def main():
                 registered = True
                 print('Agente ligado. Deixa o Termux aberto.', flush=True)
             job = request_json(base, '/bridge/next', token=token)
-            if job.get('id') and job.get('action') in ('join', 'play'):
+            if job.get('id') and job.get('action') in ('join', 'play', 'ai'):
                 print('A executar:', job['action'], job.get('code') or '', flush=True)
                 try:
                     status, detail = (open_room(job['code']) if job['action'] == 'join'
+                                      else run_ai(base, token) if job['action'] == 'ai'
                                       else start_match())
                 except Exception as exc:
                     status, detail = 'failed', f'{type(exc).__name__}: {exc}'
