@@ -2,7 +2,6 @@
 """Open queued official room invitations in the installed game app."""
 
 import json
-import hashlib
 import os
 from pathlib import Path
 import re
@@ -77,13 +76,11 @@ def main():
         TOKEN_FILE.write_text(secrets.token_urlsafe(32))
         TOKEN_FILE.chmod(0o600)
     token = TOKEN_FILE.read_text().strip()
-    pair_code = hashlib.blake2s(token.encode(), digest_size=4).hexdigest().upper()
-    print('Código de emparelhamento:', pair_code, flush=True)
     registered = False
     while True:
         try:
             if not registered:
-                request_json(base, '/bridge/register', payload={'token': token, 'pair_code': pair_code})
+                request_json(base, '/bridge/register', payload={'token': token})
                 registered = True
                 print('Agente ligado. Deixa o Termux aberto.', flush=True)
             job = request_json(base, '/bridge/next', token=token)
