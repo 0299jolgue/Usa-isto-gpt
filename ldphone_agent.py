@@ -10,9 +10,7 @@ import shlex
 import subprocess
 import sys
 import time
-from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
 
 PACKAGE = 'com.supercell.brawlstars'
 TOKEN_FILE = Path.home() / '.brawl_room_agent_token'
@@ -20,17 +18,33 @@ CODE = re.compile(r'^X[QWERTYUPASDFGHJKLZCVBNM23456789]{2,12}$')
 TCPDUMP = '/data/data/com.termux/files/usr/bin/tcpdump'
 
 
+class HttpStatus(Exception):
+    def __init__(self, code, path, detail):
+        self.code = code
+        self.path = path
+        self.detail = detail
+        super().__init__(f'HTTP {code} em {path}: {detail}')
+
+
 def request_json(base, path, token=None, payload=None):
-    headers = {'Accept': 'application/json'}
+    command = ['curl', '-sS', '-m', '15', '-w', '\n%{http_code}',
+               '-H', 'Accept: application/json']
     if token:
-        headers['Authorization'] = 'Bearer ' + token
+        command += ['-H', 'Authorization: Bearer ' + token]
     body = None
     if payload is not None:
-        body = json.dumps(payload).encode()
-        headers['Content-Type'] = 'application/json'
-    req = Request(base + path, data=body, headers=headers)
-    with urlopen(req, timeout=15) as response:
-        return json.load(response)
+        body = json.dumps(payload)
+        command += ['-H', 'Content-Type: application/json', '-X', 'POST', '--data-binary', '@-']
+    command.append(base + path)
+    result = subprocess.run(command, input=body, capture_output=True, text=True, timeout=18)
+    if result.returncode:
+        raise OSError(f'curl: {result.stderr.strip()[:120]}')
+    response, separator, status = result.stdout.rpartition('\n')
+    if not separator or not status.isdecimal():
+        raise ValueError(f'Resposta HTTP inválida em {path}')
+    if int(status) >= 400:
+        raise HttpStatus(int(status), path, response.strip()[:120])
+    return json.loads(response)
 
 
 def observe_join():
@@ -95,19 +109,19 @@ def main():
                         request_json(base, '/bridge/result/' + job['id'], token=token,
                                      payload={'status': status, 'detail': detail})
                         break
-                    except (HTTPError, URLError, TimeoutError, OSError, ValueError):
+                    except (HttpStatus, TimeoutError, OSError, ValueError):
                         if attempt == 4:
                             print('Falha ao enviar o resultado ao site.', flush=True)
                         else:
                             time.sleep(2)
                 print(detail, flush=True)
             time.sleep(2)
-        except HTTPError as exc:
+        except HttpStatus as exc:
             if exc.code in (401, 404, 409):
                 registered = False
-            print('HTTP:', exc.code, flush=True)
+            print(exc, flush=True)
             time.sleep(5)
-        except (URLError, TimeoutError, OSError, ValueError) as exc:
+        except (TimeoutError, OSError, ValueError) as exc:
             print('Ligação:', exc, flush=True)
             time.sleep(5)
 
