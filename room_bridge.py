@@ -24,6 +24,7 @@ _LABELS = {
     'observed': 'Pedido de entrada enviado pelo jogo; confirma a sala no ecrã',
     'failed': 'Não foi possível abrir o convite',
     'tapped': 'Toque em Jogar enviado ao LDPhone; confirma no jogo',
+    'complete': 'Teste de IA terminado',
 }
 _PAGE = '''<!doctype html><html lang="pt"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Entrar na sala</title><style>body{font:17px system-ui;max-width:520px;margin:2rem auto;padding:0 1rem}
@@ -36,7 +37,8 @@ p{line-height:1.5}pre{white-space:pre-wrap;word-break:break-all;background:#eee;
 <script>setInterval(async()=>{try{let r=await fetch('/bridge/online');if((await r.json()).online)location.reload()}catch(e){}},3000)</script>{% endif %}
 <form method="post" action="/bridge/join"><input name="code" placeholder="Código ou link da sala" required>
 <button>Entrar com a conta do LDPhone</button></form>
-<form method="post" action="/bridge/play"><button>Iniciar partida no LDPhone</button></form></html>'''
+<form method="post" action="/bridge/play"><button>Iniciar partida no LDPhone</button></form>
+<form method="post" action="/bridge/ai"><button>Testar IA durante 20 segundos</button></form></html>'''
 
 
 def normalize_code(value):
@@ -112,6 +114,17 @@ def play():
     return redirect(f'/bridge/job/{job_id}', code=303)
 
 
+@bridge.post('/bridge/ai')
+def ai():
+    with _lock:
+        if len(_pending) >= 4:
+            return jsonify(error='queue full'), 429
+        job_id = secrets.token_urlsafe(12)
+        _jobs[job_id] = {'action': 'ai', 'status': 'queued', 'created': time.monotonic()}
+        _pending.append(job_id)
+    return redirect(f'/bridge/job/{job_id}', code=303)
+
+
 @bridge.get('/bridge/job/<job_id>')
 def job_page(job_id):
     with _lock:
@@ -119,8 +132,10 @@ def job_page(job_id):
         if not job:
             return jsonify(error='unknown job'), 404
         action, state = job['action'], job['status']
-        title = 'Sala ' + job['code'] if action == 'join' else 'Iniciar partida'
-        label = ('A tocar em Jogar' if state == 'running' and action == 'play'
+        title = 'Sala ' + job['code'] if action == 'join' else ('Teste de IA' if action == 'ai' else 'Iniciar partida')
+        label = ('A analisar imagens e jogar' if state == 'running' and action == 'ai'
+                 else 'A tocar em Jogar' if state == 'running' and action == 'play'
+                 else 'Falha no teste de IA' if state == 'failed' and action == 'ai'
                  else 'Não foi possível iniciar a partida' if state == 'failed' and action == 'play'
                  else _LABELS.get(state, state))
         if state == 'queued' and time.monotonic() - _last_seen >= 15:
@@ -141,7 +156,9 @@ def status(job_id):
         if job['status'] in ('queued', 'running') and time.monotonic() - job['created'] > 90:
             job['status'] = 'failed'
             job['detail'] = 'Tempo esgotado sem confirmação do agente.'
-        label = ('A tocar em Jogar' if job['status'] == 'running' and job['action'] == 'play'
+        label = ('A analisar imagens e jogar' if job['status'] == 'running' and job['action'] == 'ai'
+                 else 'A tocar em Jogar' if job['status'] == 'running' and job['action'] == 'play'
+                 else 'Falha no teste de IA' if job['status'] == 'failed' and job['action'] == 'ai'
                  else 'Não foi possível iniciar a partida' if job['status'] == 'failed' and job['action'] == 'play'
                  else _LABELS.get(job['status'], job['status']))
         if job['status'] == 'queued' and time.monotonic() - _last_seen >= 15:
@@ -172,7 +189,7 @@ def result(job_id):
         return jsonify(error='unauthorized'), 401
     data = request.get_json(silent=True) or {}
     state = data.get('status')
-    if state not in ('sent', 'observed', 'tapped', 'failed'):
+    if state not in ('sent', 'observed', 'tapped', 'complete', 'failed'):
         return jsonify(error='invalid status'), 400
     with _lock:
         job = _jobs.get(job_id)
