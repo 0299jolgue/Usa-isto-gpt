@@ -107,6 +107,8 @@ def job_page(job_id):
             return jsonify(error='unknown job'), 404
         code, state = job['code'], job['status']
         label = _LABELS.get(state, state)
+        if state == 'queued' and time.monotonic() - _last_seen >= 15:
+            label = 'LDPhone desligado; inicia o agente no Termux'
     return f'''<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><h1>Sala {code}</h1>
 <p id="status">{label}</p><a href="/bridge">Voltar</a><script>
 setInterval(async()=>{{let r=await fetch('/bridge/status/{job_id}');if(r.ok){{let j=await r.json();
@@ -123,7 +125,10 @@ def status(job_id):
         if job['status'] in ('queued', 'running') and time.monotonic() - job['created'] > 90:
             job['status'] = 'failed'
             job['detail'] = 'Tempo esgotado sem confirmação do agente.'
-        return jsonify(status=job['status'], label=_LABELS.get(job['status'], job['status']),
+        label = _LABELS.get(job['status'], job['status'])
+        if job['status'] == 'queued' and time.monotonic() - _last_seen >= 15:
+            label = 'LDPhone desligado; inicia o agente no Termux'
+        return jsonify(status=job['status'], label=label,
                        detail=job.get('detail', ''))
 
 
