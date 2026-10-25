@@ -56,8 +56,11 @@ def register():
     if len(token) < 32 or len(token) > 128 or not re.fullmatch(r'[A-Z0-9]{8}', pair_code):
         return jsonify(error='invalid registration'), 400
     with _lock:
-        if _agent_token and not hmac.compare_digest(token, _agent_token):
+        if _agent_token and not hmac.compare_digest(token, _agent_token) and time.monotonic() - _last_seen < 30:
             return jsonify(error='agent already registered'), 409
+        if _agent_token and not hmac.compare_digest(token, _agent_token):
+            _browser_token = None
+            _pending.clear()
         _agent_token, _pair_code, _last_seen = token, pair_code, time.monotonic()
         return jsonify(ok=True)
 
@@ -117,6 +120,9 @@ def status(job_id):
         job = _jobs.get(job_id)
         if not job:
             return jsonify(error='unknown job'), 404
+        if job['status'] in ('queued', 'running') and time.monotonic() - job['created'] > 90:
+            job['status'] = 'failed'
+            job['detail'] = 'Tempo esgotado sem confirmação do agente.'
         return jsonify(status=job['status'], detail=job.get('detail', ''))
 
 
