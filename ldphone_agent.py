@@ -37,7 +37,7 @@ def request_json(base, path, token=None, payload=None):
 def observe_join():
     if not Path(TCPDUMP).exists():
         return None
-    command = [TCPDUMP, '-i', 'any', '-nn', '-s', '64', '-c', '1',
+    command = [TCPDUMP, '-i', 'any', '-nn', '-s', '128', '-c', '1',
                'tcp dst port 9339 and tcp[((tcp[12] & 0xf0) >> 2):2] = 0x3816']
     return subprocess.Popen(['su', '-c', shlex.join(command)],
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
