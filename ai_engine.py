@@ -91,32 +91,43 @@ def decide(png):
                          float(confidence[i])) for i in indices]
     player = max(found['player'], key=lambda row: row[2], default=None)
     enemies = found['enemy']
-    if player and enemies:
-        target = min(enemies, key=lambda row: (row[0]-player[0])**2 + (row[1]-player[1])**2)
-        dx, dy = target[0]-player[0], target[1]-player[1]
+    movement = None
+    if player:
         import math
-        distance = max(1., math.hypot(dx, dy))
-        base_x, base_y = .897*width, .734*height  # Pyla's 1920x1080 attack stick
-        radius = .065*width
-        action = {'kind': 'attack', 'x1': round(base_x), 'y1': round(base_y),
-                  'x2': round(base_x + radius*dx/distance),
-                  'y2': round(base_y + radius*dy/distance), 'duration_ms': 120,
-                  'confidence': round(target[2], 3)}
-    elif player:
-        # Briefly move toward the arena center until an enemy is visible.
-        dx, dy = width/2-player[0], height/2-player[1]
-        import math
-        distance = max(1., math.hypot(dx, dy))
-        base_x, base_y = .094*width, .833*height
-        radius = .065*width
-        action = {'kind': 'move', 'x1': round(base_x), 'y1': round(base_y),
-                  'x2': round(base_x + radius*dx/distance),
-                  'y2': round(base_y + radius*dy/distance), 'duration_ms': 160,
-                  'confidence': round(player[2], 3)}
+        if enemies:
+            target = min(enemies, key=lambda row: (row[0]-player[0])**2 + (row[1]-player[1])**2)
+            dx, dy = target[0]-player[0], target[1]-player[1]
+            distance = max(1., math.hypot(dx, dy))
+            # Walk into range; strafe around enemies already in range.
+            if distance < width * .18:
+                direction = -1 if int(time.monotonic() / 3) % 2 else 1
+                move_dx, move_dy = -dy * direction, dx * direction
+            else:
+                move_dx, move_dy = dx, dy
+            attack_x, attack_y = .897*width, .734*height
+            attack_radius = .065*width
+            action = {'kind': 'attack', 'x1': round(attack_x), 'y1': round(attack_y),
+                      'x2': round(attack_x + attack_radius*dx/distance),
+                      'y2': round(attack_y + attack_radius*dy/distance),
+                      'duration_ms': 130, 'confidence': round(target[2], 3)}
+        else:
+            # Patrol when the nearest enemy is outside the camera view.
+            move_dx, move_dy = width/2-player[0], height/2-player[1]
+            if math.hypot(move_dx, move_dy) < width * .07:
+                direction = -1 if int(time.monotonic() / 4) % 2 else 1
+                move_dx, move_dy = direction, .35
+            action = {'kind': 'none'}
+        move_len = max(1., math.hypot(move_dx, move_dy))
+        move_x, move_y = .094*width, .833*height
+        move_radius = .065*width
+        movement = {'kind': 'move', 'x1': round(move_x), 'y1': round(move_y),
+                    'x2': round(move_x + move_radius*move_dx/move_len),
+                    'y2': round(move_y + move_radius*move_dy/move_len),
+                    'duration_ms': 420, 'confidence': round(player[2], 3)}
     else:
         action = {'kind': 'none'}
     return {'action': action, 'state': state, 'state_confidence': state_confidence,
-            'width': width, 'height': height,
+            'width': width, 'height': height, 'movement': movement,
             'detections': {name: len(rows) for name, rows in found.items()},
             'timings_ms': {'decode': round((decoded-started)*1000, 1),
                            'inference': round((inferred-decoded)*1000, 1),
