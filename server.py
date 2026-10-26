@@ -31,6 +31,7 @@ def template_security():
 def require_login():
     public = {'health', 'agent_script', 'login', 'static', 'bridge.register',
               'bridge.next_job', 'bridge.result', 'bridge.upload_screenshot',
+              'bridge.farm_state', 'bridge.trophies_report',
               'ai_ready', 'ai_step'}
     if request.endpoint in public:
         return None
