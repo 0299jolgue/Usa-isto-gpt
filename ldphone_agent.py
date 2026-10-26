@@ -405,6 +405,14 @@ class TouchController:
         time.sleep(.06)
         self.send('up', 1)
 
+    def auto_fire(self, x, y, width, height):
+        # Slot 0 keeps steering while slot 1 taps the game's auto-aim button.
+        self.send('down', 1, (x, y), (width, height))
+        try:
+            time.sleep(.06)
+        finally:
+            self.send('up', 1)
+
     def close(self):
         try:
             if self.process.poll() is None and self.process.stdin:
@@ -620,6 +628,21 @@ def run_ai(base, token, duration=20, stop_check=None, auto_start=True):
                     raise RuntimeError('Toque falhou: ' + gesture.stderr.strip()[:100])
                 actions += 1
                 time.sleep(2.5 if action.get('reason') == 'exit_button' else 1.5)
+            elif action['kind'] == 'auto_fire':
+                x, y = int(action['x1']), int(action['y1'])
+                if touch:
+                    try:
+                        touch.auto_fire(x, y, data['width'], data['height'])
+                    except (OSError, RuntimeError) as exc:
+                        print('Multitouch falhou; auto fire normal:', exc, flush=True)
+                        touch.close()
+                        touch = None
+                if not touch:
+                    gesture = subprocess.run(['su', '-c', f'/system/bin/input tap {x} {y}'],
+                                             capture_output=True, text=True, timeout=5)
+                    if gesture.returncode:
+                        raise RuntimeError('Auto fire falhou: ' + gesture.stderr.strip()[:100])
+                actions += 1
             elif action['kind'] == 'attack':
                 if touch:
                     try:
