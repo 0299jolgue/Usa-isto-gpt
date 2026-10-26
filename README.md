@@ -29,3 +29,12 @@ Esta é uma primeira política de ataque ao inimigo mais próximo e movimento at
 ## Testes
 
 Arranque, fila, consulta pelo agente, abertura simulada do convite, atualização de estado e inferência ONNX sobre uma imagem sintética foram testados localmente. A entrada real e o ciclo de jogo dependem do teste no LDPhone.
+
+
+## Controlo do jogo
+
+No LDPhone, instala OCR com `pkg install -y tesseract` e reinicia o agente usando o comando atualizado no painel. O botão de troféus tira um novo print; o agente tenta reconhecer o número da zona do perfil e envia-o ao painel. Esta leitura depende do layout mostrado no ecrã.
+
+Para trocar de brawler, abre o print da conta e toca no ponto desejado. O agente converte o ponto à resolução do LDPhone, toca no jogo e tira outro print. Repete até selecionar o brawler.
+
+O auto farm inicia partidas e aplica a IA existente em ciclos; o botão Parar interrompe o ciclo seguinte. Mantém a página do trabalho aberta para ver o estado.
