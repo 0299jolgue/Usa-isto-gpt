@@ -99,10 +99,10 @@ def decide(png, strategy='balanced'):
     def clamp_x(value): return max(0, min(width-1, round(value)))
     def clamp_y(value): return max(0, min(height-1, round(value)))
     tactics = {
-        'aggressive': {'range': .12, 'attack_ms': 180},
-        'balanced': {'range': .18, 'attack_ms': 130},
-        'cautious': {'range': .28, 'attack_ms': 100},
-    }.get(strategy, {'range': .18, 'attack_ms': 130})
+        'aggressive': {'range': .12, 'attack_ms': 180, 'auto_fire_range': .105},
+        'balanced': {'range': .18, 'attack_ms': 130, 'auto_fire_range': .09},
+        'cautious': {'range': .28, 'attack_ms': 100, 'auto_fire_range': .075},
+    }.get(strategy, {'range': .18, 'attack_ms': 130, 'auto_fire_range': .09})
     movement = None
     if player:
         import math
@@ -126,11 +126,15 @@ def decide(png, strategy='balanced'):
             else:
                 move_dx, move_dy = dx, dy
             attack_x, attack_y = .897*width, .734*height
-            attack_radius = .065*width
-            action = {'kind': 'attack', 'x1': round(attack_x), 'y1': round(attack_y),
-                      'x2': clamp_x(attack_x + attack_radius*dx/distance),
-                      'y2': clamp_y(attack_y + attack_radius*dy/distance),
-                      'duration_ms': tactics['attack_ms'], 'confidence': round(target[2], 3)}
+            if distance <= width * tactics['auto_fire_range']:
+                action = {'kind': 'auto_fire', 'x1': round(attack_x),
+                          'y1': round(attack_y), 'confidence': round(target[2], 3)}
+            else:
+                attack_radius = .065*width
+                action = {'kind': 'attack', 'x1': round(attack_x), 'y1': round(attack_y),
+                          'x2': clamp_x(attack_x + attack_radius*dx/distance),
+                          'y2': clamp_y(attack_y + attack_radius*dy/distance),
+                          'duration_ms': tactics['attack_ms'], 'confidence': round(target[2], 3)}
         else:
             # Patrol when the nearest enemy is outside the camera view.
             move_dx, move_dy = width/2-player[0], height/2-player[1]
