@@ -38,3 +38,6 @@ No LDPhone, instala OCR com `pkg install -y tesseract` e reinicia o agente usand
 Para trocar de brawler, abre o print da conta e toca no ponto desejado. O agente converte o ponto à resolução do LDPhone, toca no jogo e tira outro print. Repete até selecionar o brawler.
 
 O auto farm corre um ciclo contínuo: usa templates de estado do PylaAI fixados no commit `284714d` para identificar lobby, procura de partida e fim de jogo; inicia/avança os ecrãs correspondentes e aplica o modelo ONNX nas partidas. O botão Parar é verificado a cada poucos segundos. Os templates são descarregados e guardados na primeira utilização. A política de movimento/ataque é uma adaptação simplificada do projeto PylaAI; a validação final exige observar uma partida real no LDPhone.
+
+
+No LDPhone com root, o agente usa os eventos multitouch do Android para manter o joystick pressionado entre imagens e disparar com um segundo dedo. Ao parar, sair do combate ou ocorrer um erro, solta ambos os toques. Se o dispositivo não expuser um ecrã multitouch acessível por root, o agente regista a falha no Termux e usa gestos longos como recurso alternativo.
