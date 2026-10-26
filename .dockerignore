@@ -2,6 +2,11 @@
 !server.py
 !room_bridge.py
 !ldphone_agent.py
+!ai_engine.py
 !main.py
 !requirements.txt
 !Dockerfile
+!templates/
+!templates/*.html
+!static/
+!static/*.css
