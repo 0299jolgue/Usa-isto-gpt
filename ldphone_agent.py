@@ -8,10 +8,13 @@ from pathlib import Path
 import re
 import secrets
 import shlex
+import shutil
 import subprocess
 import struct
 import sys
 import time
+import csv
+import io
 from urllib.parse import urlparse
 
 PACKAGE = 'com.supercell.brawlstars'
@@ -132,14 +135,15 @@ def _ai_post(connection, path, token, body=b'', content_type='application/octet-
     return json.loads(raw)
 
 
-def capture_screenshot(base, token):
-    launch = subprocess.run(['su', '-c', shlex.join([
-        '/system/bin/monkey', '-p', PACKAGE, '-c',
-        'android.intent.category.LAUNCHER', '1',
-    ])], capture_output=True, timeout=15)
-    if launch.returncode:
-        raise RuntimeError('Não foi possível abrir o Brawl Stars para o print')
-    time.sleep(1)
+def capture_screenshot(base, token, launch_game=True):
+    if launch_game:
+        launch = subprocess.run(['su', '-c', shlex.join([
+            '/system/bin/monkey', '-p', PACKAGE, '-c',
+            'android.intent.category.LAUNCHER', '1',
+        ])], capture_output=True, timeout=15)
+        if launch.returncode:
+            raise RuntimeError('Não foi possível abrir o Brawl Stars para o print')
+        time.sleep(1)
     shot = subprocess.run(['su', '-c', '/system/bin/screencap -p'],
                           capture_output=True, timeout=7)
     if shot.returncode:
@@ -148,12 +152,16 @@ def capture_screenshot(base, token):
     connection = http.client.HTTPSConnection(urlparse(base).netloc, timeout=20)
     try:
         _ai_post(connection, '/bridge/screenshot-upload', token, shot.stdout, 'image/png')
+        trophies = read_trophies(shot.stdout, width, height)
+        if trophies is not None:
+            _ai_post(connection, '/bridge/trophies-report', token,
+                     json.dumps({'trophies': trophies}).encode(), 'application/json')
     finally:
         connection.close()
     return 'complete', f'Print guardado no painel ({width}x{height}).'
 
 
-def run_ai(base, token):
+def run_ai(base, token, duration=20, stop_check=None):
     host = urlparse(base).netloc
     connection = http.client.HTTPSConnection(host, timeout=120)
     frames = 0
@@ -163,9 +171,11 @@ def run_ai(base, token):
         _ai_post(connection, '/ai/ready', token)
         start_match()
         time.sleep(6)
-        deadline = time.monotonic() + 20
+        deadline = time.monotonic() + duration
         connection.timeout = 15
         while time.monotonic() < deadline:
+            if stop_check and stop_check():
+                break
             begin = time.monotonic()
             shot = subprocess.run(['su', '-c', '/system/bin/screencap -p'],
                                   capture_output=True, timeout=5)
@@ -202,6 +212,61 @@ def run_ai(base, token):
     return 'complete', f'{frames} imagens, {actions} gestos; ciclo mediano {median:.0f} ms, P90 {p90:.0f} ms.'
 
 
+
+
+def read_trophies(png, width, height):
+    # On the home screen the account's total trophies sit beside the avatar,
+    # near the top-left. Ignore other resource counters across the top bar.
+    if not shutil.which('tesseract'):
+        return None
+    result = subprocess.run(['tesseract', 'stdin', 'stdout', 'tsv', '--psm', '11'],
+                            input=png, capture_output=True, timeout=15)
+    if result.returncode:
+        return None
+    candidates = []
+    for row in csv.DictReader(io.StringIO(result.stdout.decode('utf-8', 'replace')), delimiter='\t'):
+        value = re.sub(r'[^0-9]', '', row.get('text', ''))
+        try:
+            x, y, confidence = int(row['left']), int(row['top']), float(row['conf'])
+        except (KeyError, ValueError):
+            continue
+        if value and 2 <= len(value) <= 6 and confidence >= 65 and 0 <= x < width * .32 \
+                and height * .08 < y < height * .38:
+            number = int(value)
+            if number <= 1000000:
+                candidates.append((confidence, number))
+    return max(candidates)[1] if candidates else None
+
+def tap_screen(base, token, coords):
+    if not isinstance(coords, list) or len(coords) != 2 or any(
+            not isinstance(n, (int, float)) or not 0 <= n <= 1 for n in coords):
+        raise ValueError('Coordenadas inválidas')
+    shot = subprocess.run(['su', '-c', '/system/bin/screencap -p'],
+                          capture_output=True, timeout=7)
+    width, height = png_dimensions(shot.stdout)
+    x, y = round(coords[0] * width), round(coords[1] * height)
+    result = subprocess.run(['su', '-c', f'/system/bin/input tap {x} {y}'],
+                            capture_output=True, text=True, timeout=8)
+    if result.returncode:
+        raise RuntimeError(result.stderr.strip()[:150])
+    time.sleep(.8)
+    capture_screenshot(base, token, launch_game=False)
+    return 'complete', f'Toque em {x},{y}; novo print disponível.'
+
+
+def run_farm(base, token, job_id):
+    games = 0
+    def stopped():
+        return request_json(base, '/bridge/farm-state/' + job_id, token=token)['stop']
+    while not stopped():
+        # One match at a time; the controller keeps checking the stop request.
+        run_ai(base, token, duration=120, stop_check=stopped)
+        games += 1
+        if stopped():
+            break
+        time.sleep(5)
+    return 'complete', f'Auto farm parado após {games} ciclos.'
+
 def main():
     if len(sys.argv) not in (2, 3):
         raise SystemExit('Uso: python ldphone_agent.py https://teu-site.shardweb.app CODIGO_DE_LIGACAO')
@@ -222,12 +287,14 @@ def main():
                 registered = True
                 print('Agente ligado:', registration.get('name', 'LDPhone'), flush=True)
             job = request_json(base, '/bridge/next', token=token)
-            if job.get('id') and job.get('action') in ('join', 'play', 'ai', 'snapshot'):
+            if job.get('id') and job.get('action') in ('join', 'play', 'ai', 'snapshot', 'tap', 'farm'):
                 print('A executar:', job['action'], job.get('code') or '', flush=True)
                 try:
                     status, detail = (open_room(job['code']) if job['action'] == 'join'
                                       else run_ai(base, token) if job['action'] == 'ai'
                                       else capture_screenshot(base, token) if job['action'] == 'snapshot'
+                                      else tap_screen(base, token, job['coords']) if job['action'] == 'tap'
+                                      else run_farm(base, token, job['id']) if job['action'] == 'farm'
                                       else start_match())
                 except Exception as exc:
                     status, detail = 'failed', f'{type(exc).__name__}: {exc}'
