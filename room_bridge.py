@@ -204,6 +204,23 @@ def profile(device_id):
     return redirect(url_for('bridge.home'), code=303)
 
 
+@bridge.post('/bridge/device/<device_id>/remove')
+def remove_device(device_id):
+    device = _device(device_id)
+    if not device:
+        return 'Telemóvel desconhecido', 404
+    with _lock:
+        _pending.pop(device_id, None)
+        for job in _jobs.values():
+            if job['device_id'] == device_id and job['status'] not in _TERMINAL:
+                job['status'], job['detail'] = 'failed', 'Telemóvel removido do painel.'
+    with _db() as con:
+        con.execute('DELETE FROM devices WHERE id=?', (device_id,))
+    (_SCREENS / (device_id + '.png')).unlink(missing_ok=True)
+    flash(f'{device["name"]} removido. Podes emparelhá-lo novamente.')
+    return redirect(url_for('bridge.home'), code=303)
+
+
 @bridge.post('/bridge/api-key')
 def api_key():
     key = request.form.get('api_key', '').strip()
