@@ -379,6 +379,7 @@ class TouchController:
             self.close()
             raise RuntimeError('O controlador multitouch falhou')
         self.moving = False
+        self.fire_held = False
         print('Multitouch:', ready['device'], 'rotação', ready['rotation'], flush=True)
 
     def send(self, op, slot=None, point=None, size=None):
@@ -409,6 +410,7 @@ class TouchController:
             self.moving = False
 
     def attack(self, action, width, height):
+        self.release_fire()
         start = (int(action['x1']), int(action['y1']))
         end = (int(action['x2']), int(action['y2']))
         self.send('down', 1, start, (width, height))
@@ -419,13 +421,25 @@ class TouchController:
             self.send('up', 1)
 
     def tap(self, x, y, width, height):
+        self.release_fire()
         self.release_move()
         self.send('down', 1, (x, y), (width, height))
         time.sleep(.06)
         self.send('up', 1)
 
     def auto_fire(self, x, y, width, height):
-        # Slot 0 keeps steering while slot 1 taps the game's auto-aim button.
+        # Keep slot 1 down between frames to fire as ammo becomes available.
+        if not self.fire_held:
+            self.send('down', 1, (x, y), (width, height))
+            self.fire_held = True
+
+    def release_fire(self):
+        if self.fire_held:
+            self.send('up', 1)
+            self.fire_held = False
+
+    def press_super(self, x, y, width, height):
+        self.release_fire()
         self.send('down', 1, (x, y), (width, height))
         try:
             time.sleep(.06)
@@ -630,6 +644,13 @@ def run_ai(base, token, duration=20, stop_check=None, auto_start=True):
             if state != 'match' or player_seen or action.get('reason') == 'stuck_screen':
                 no_detection_since = time.monotonic()
             movement = data.get('movement') if action['kind'] != 'tap' and state == 'match' else None
+            if touch and action['kind'] != 'auto_fire':
+                try:
+                    touch.release_fire()
+                except (OSError, RuntimeError) as exc:
+                    print('Multitouch falhou ao soltar ataque:', exc, flush=True)
+                    touch.close()
+                    touch = None
             if movement:
                 if touch:
                     try:
@@ -667,11 +688,14 @@ def run_ai(base, token, duration=20, stop_check=None, auto_start=True):
                     raise RuntimeError('Toque falhou: ' + gesture.stderr.strip()[:100])
                 actions += 1
                 time.sleep(2.5 if action.get('reason') == 'exit_button' else 1.5)
-            elif action['kind'] == 'auto_fire':
+            elif action['kind'] in ('auto_fire', 'super'):
                 x, y = int(action['x1']), int(action['y1'])
                 if touch:
                     try:
-                        touch.auto_fire(x, y, data['width'], data['height'])
+                        if action['kind'] == 'super':
+                            touch.press_super(x, y, data['width'], data['height'])
+                        else:
+                            touch.auto_fire(x, y, data['width'], data['height'])
                     except (OSError, RuntimeError) as exc:
                         print('Multitouch falhou; auto fire normal:', exc, flush=True)
                         touch.close()
@@ -703,6 +727,7 @@ def run_ai(base, token, duration=20, stop_check=None, auto_start=True):
             elapsed = (time.monotonic() - begin) * 1000
             cycles.append(elapsed)
             print(f'IA frame={frames} estado={state} tática={data.get("tactic", "-")} vida={data.get("health")} '
+                  f'inimigos={data.get("detections", {}).get("enemy", 0)} super={data.get("super_ready")} '
                   f'movimento={bool(data.get("movement"))} ação={action["kind"]} ciclo={elapsed:.0f}ms '
                   f'servidor={data["timings_ms"]["total"]}ms', flush=True)
     finally:
