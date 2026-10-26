@@ -14,6 +14,7 @@ import subprocess
 import struct
 import sys
 import time
+import threading
 import csv
 import io
 import fcntl
@@ -430,6 +431,13 @@ def choose_post_frame_action(action, state, player_seen, no_player_seconds,
     return action
 
 
+def report_learning(base, token, stats):
+    try:
+        request_json(base, '/bridge/learning-report', token=token, payload=stats)
+    except (OSError, TimeoutError, ValueError, HttpStatus) as exc:
+        print('Estatísticas por enviar:', exc, flush=True)
+
+
 class TacticsMemory:
     """Small on-device bandit: retain wins/losses per movement policy."""
     FILE = Path.home() / '.brawl_room_tactics.json'
@@ -567,11 +575,9 @@ def run_ai(base, token, duration=20, stop_check=None, auto_start=True):
                           'loss' if action.get('reason') == 'exit_button' and in_match else None)
                 if in_match and result:
                     learner.record(result)
-                    try:
-                        request_json(base, '/bridge/learning-report', token=token,
-                                     payload=learner.stats)
-                    except (OSError, TimeoutError, ValueError, HttpStatus) as exc:
-                        print('Estatísticas por enviar:', exc, flush=True)
+                    stats_snapshot = json.loads(json.dumps(learner.stats))
+                    threading.Thread(target=report_learning,
+                                     args=(base, token, stats_snapshot), daemon=True).start()
                     in_match = False
                     awaiting_new_match = True
             if state != 'match' or player_seen or action.get('reason') == 'stuck_screen':
