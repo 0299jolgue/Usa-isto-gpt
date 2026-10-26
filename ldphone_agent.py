@@ -9,6 +9,7 @@ import re
 import secrets
 import shlex
 import subprocess
+import struct
 import sys
 import time
 from urllib.parse import urlparse
@@ -88,29 +89,35 @@ def start_match():
     ])], capture_output=True, text=True, timeout=30)
     if launch.returncode:
         raise RuntimeError((launch.stderr or launch.stdout).strip()[:200])
-    time.sleep(4)
-    foreground = subprocess.run(['su', '-c', 'dumpsys activity activities'],
-                                capture_output=True, text=True, timeout=15)
-    if foreground.returncode or not re.search(r'(?:topResumedActivity|mResumedActivity).*com\.supercell\.brawlstars',
-                                               foreground.stdout):
-        raise RuntimeError('Brawl Stars não está em primeiro plano')
-    display = subprocess.run(['su', '-c', 'dumpsys display'],
-                             capture_output=True, text=True, timeout=15)
-    dimensions = re.search(r'logicalWidth=(\d+).*?logicalHeight=(\d+)', display.stdout)
-    if not dimensions:
-        dimensions = re.search(r'(?:(?:mBase|mOverride)?DisplayInfo=DisplayInfo\{)[^\n]*?\b(\d+) x (\d+)\b',
-                               display.stdout)
-    if display.returncode or not dimensions:
-        raise RuntimeError('Não foi possível determinar o tamanho do ecrã')
-    width, height = map(int, dimensions.groups())
-    if width <= height or width < 500 or height < 300:
-        raise RuntimeError(f'O jogo não está em modo horizontal ({width}x{height})')
+    # Android's physical display metrics can remain portrait while the game is
+    # rendered landscape. Input coordinates use the actual captured frame.
+    deadline = time.monotonic() + 20
+    width = height = 0
+    while time.monotonic() < deadline:
+        shot = subprocess.run(['su', '-c', '/system/bin/screencap -p'],
+                              capture_output=True, timeout=5)
+        if shot.returncode == 0:
+            width, height = png_dimensions(shot.stdout)
+            if width > height:
+                break
+        time.sleep(1)
+    if width <= height:
+        raise RuntimeError(f'O Brawl Stars ainda não apareceu na captura horizontal ({width}x{height})')
     x, y = round(width * .88), round(height * .88)
     tap = subprocess.run(['su', '-c', f'/system/bin/input tap {x} {y}'],
                          capture_output=True, text=True, timeout=15)
     if tap.returncode:
         raise RuntimeError((tap.stderr or tap.stdout).strip()[:200])
     return 'tapped', f'Toque em Jogar enviado em {x},{y} ({width}x{height}); confirma a partida no jogo.'
+
+
+def png_dimensions(data):
+    if len(data) < 24 or data[:8] != b'\x89PNG\r\n\x1a\n' or data[12:16] != b'IHDR':
+        raise RuntimeError('A captura do ecrã não é um PNG válido')
+    width, height = struct.unpack('>II', data[16:24])
+    if not (320 <= width <= 8192 and 180 <= height <= 8192):
+        raise RuntimeError(f'Dimensões de captura inválidas: {width}x{height}')
+    return width, height
 
 
 def _ai_post(connection, path, token, body=b'', content_type='application/octet-stream'):
