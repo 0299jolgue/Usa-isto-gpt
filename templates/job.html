@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="pt">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#101424">
+  <title>{{ title }} · Brawl Room</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body>
+  <main class="shell shell-job">
+    <header class="topbar"><a class="brand" href="{{ url_for('bridge.home') }}"><span class="brand-mark" aria-hidden="true">✳</span> BRAWL ROOM</a><a class="back-link" href="{{ url_for('bridge.home') }}">← Voltar</a></header>
+    <section class="result-card">
+      <p class="eyebrow">ESTADO DA AÇÃO</p>
+      <h1>{{ title }}</h1>
+      <div class="status-panel" id="status-panel" data-state="{{ state }}" aria-live="polite">
+        <span class="status-icon" aria-hidden="true"></span>
+        <div><p class="status-label" id="status-label">{{ label }}</p><p class="status-detail" id="status-detail" {% if not detail %}hidden{% endif %}>{{ detail }}</p></div>
+      </div>
+      <p class="waiting-note" id="waiting-note" {% if state not in ['queued', 'running'] %}hidden{% endif %}>Esta página atualiza automaticamente.</p>
+      <a class="button button-secondary result-back" href="{{ url_for('bridge.home') }}">Voltar ao painel <span aria-hidden="true">→</span></a>
+    </section>
+  </main>
+  <script>
+    const panel = document.getElementById('status-panel');
+    const label = document.getElementById('status-label');
+    const detail = document.getElementById('status-detail');
+    const note = document.getElementById('waiting-note');
+    const endpoint = {{ url_for('bridge.status', job_id=job_id) | tojson }};
+    let timer;
+    async function refresh() {
+      try {
+        const response = await fetch(endpoint, {cache: 'no-store'});
+        if (!response.ok) return;
+        const result = await response.json();
+        panel.dataset.state = result.status;
+        label.textContent = result.label;
+        detail.textContent = result.detail || '';
+        detail.hidden = !result.detail;
+        const pending = result.status === 'queued' || result.status === 'running';
+        note.hidden = !pending;
+        if (!pending) clearInterval(timer);
+      } catch (_) {}
+    }
+    refresh();
+    timer = setInterval(refresh, 2000);
+  </script>
+</body>
+</html>
