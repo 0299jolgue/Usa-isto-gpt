@@ -101,7 +101,7 @@ def _job_label(job):
     state = job['status']
     if state == 'running':
         return {'join': 'A abrir o convite', 'play': 'A tocar em Jogar',
-                'ai': 'A analisar imagens', 'snapshot': 'A tirar print'}[job['action']]
+                'ai': 'A analisar imagens', 'snapshot': 'A tirar print', 'tap': 'A tocar no ecrã', 'farm': 'Auto farm ativo'}[job['action']]
     if state == 'queued' and time.time() - _device(job['device_id'])['last_seen'] > 18:
         return 'LDPhone desligado'
     return {'queued': 'À espera do LDPhone', 'sent': 'Convite aberto',
@@ -123,13 +123,15 @@ def _group_status(group):
          'detail': job.get('detail', '')} for job in children]}
 
 
-def _enqueue(action, target, code=None):
+def _enqueue(action, target, code=None, coords=None):
     devices = _devices()
     selected = ([device for device in devices if device['online']] if target == 'all'
                 else [device for device in devices if device['id'] == target])
     if not selected:
         raise ValueError('Não há telemóveis disponíveis para esta ação.')
     with _lock:
+        if action == 'farm' and any(job['action'] == 'farm' and job['device_id'] in {device['id'] for device in selected} and job['status'] in ('queued', 'running') for job in _jobs.values()):
+            raise ValueError('O auto farm já está ativo numa destas contas.')
         if any(len(_pending[device['id']]) >= 4 for device in selected):
             raise ValueError('Há demasiadas ações em espera para um telemóvel.')
         group_id = secrets.token_urlsafe(12)
@@ -137,7 +139,7 @@ def _enqueue(action, target, code=None):
         _groups[group_id] = group
         for device in selected:
             job_id = secrets.token_urlsafe(12)
-            _jobs[job_id] = {'action': action, 'code': code, 'device_id': device['id'],
+            _jobs[job_id] = {'action': action, 'code': code, 'coords': coords, 'device_id': device['id'],
                              'name': device['name'], 'status': 'queued', 'created': time.time()}
             _pending[device['id']].append(job_id)
             group['children'].append(job_id)
@@ -239,32 +241,14 @@ def api_key():
 
 @bridge.post('/bridge/device/<device_id>/trophies')
 def refresh_trophies(device_id):
-    device = _device(device_id)
-    if not device:
+    if not _device(device_id):
         return 'Telemóvel desconhecido', 404
-    with _db() as con:
-        row = con.execute('SELECT value FROM settings WHERE key=?', ('brawl_api_key',)).fetchone()
-    if not row or not device['player_tag']:
-        flash('Define a tag da conta e a chave da API para ver os troféus.')
-        return redirect(url_for('bridge.home'), code=303)
-    url = 'https://api.brawlstars.com/v1/players/' + quote(device['player_tag'], safe='')
-    req = Request(url, headers={'Authorization': 'Bearer ' + row['value'], 'Accept': 'application/json'})
     try:
-        with urlopen(req, timeout=10) as response:
-            import json
-            payload = json.load(response)
-        trophies = payload.get('trophies')
-        if not isinstance(trophies, int) or trophies < 0:
-            raise ValueError('Resposta sem troféus')
-        with _db() as con:
-            con.execute('UPDATE devices SET trophies=?,trophies_at=? WHERE id=?',
-                        (trophies, time.time(), device_id))
-        flash(f'{device["name"]}: {trophies:,} troféus.'.replace(',', ' '))
-    except HTTPError as exc:
-        flash(f'API Brawl Stars: HTTP {exc.code}. Confirma a tag, chave e IP autorizado.')
-    except (URLError, TimeoutError, ValueError) as exc:
-        flash(f'Não foi possível atualizar os troféus: {exc}')
-    return redirect(url_for('bridge.home'), code=303)
+        group_id = _enqueue('snapshot', device_id)
+    except ValueError as exc:
+        flash(str(exc))
+        return redirect(url_for('bridge.home'), code=303)
+    return redirect(url_for('bridge.job_page', group_id=group_id), code=303)
 
 
 def _submit(action):
@@ -304,11 +288,12 @@ def job_page(group_id):
         if not group:
             return 'Ação desconhecida', 404
         title = {'join': 'Entrar na sala', 'play': 'Iniciar partida',
-                 'ai': 'Teste de IA', 'snapshot': 'Capturar ecrã'}[group['action']]
+                 'ai': 'Teste de IA', 'snapshot': 'Capturar ecrã', 'tap': 'Tocar no ecrã', 'farm': 'Auto farm'}[group['action']]
         if group['code']:
             title += ' ' + group['code']
         result = _group_status(group)
-    return render_template('job.html', title=title, group_id=group_id, result=result)
+    return render_template('job.html', title=title, group_id=group_id, result=result,
+                           tap_device=_jobs[group['children'][0]]['device_id'] if group['action'] == 'tap' else None)
 
 
 @bridge.get('/bridge/status/<group_id>')
@@ -319,9 +304,56 @@ def status(group_id):
             return jsonify(error='unknown action'), 404
         for job_id in group['children']:
             job = _jobs[job_id]
-            if job['status'] in ('queued', 'running') and time.time() - job['created'] > 120:
+            if job['action'] != 'farm' and job['status'] in ('queued', 'running') and time.time() - job['created'] > 120:
                 job['status'], job['detail'] = 'failed', 'Tempo esgotado sem resposta do agente.'
         return jsonify(_group_status(group))
+
+
+@bridge.post('/bridge/farm')
+def farm():
+    return _submit('farm')
+
+
+@bridge.post('/bridge/farm/stop')
+def stop_farm():
+    target = request.form.get('target', '')
+    with _lock:
+        for job in _jobs.values():
+            if job['action'] == 'farm' and (target == 'all' or job['device_id'] == target):
+                if job['status'] in ('queued', 'running'):
+                    job['stop'] = True
+                    if job['status'] == 'queued':
+                        job['status'], job['detail'] = 'complete', 'Parado antes de iniciar.'
+    flash('Pedido de paragem enviado.')
+    return redirect(url_for('bridge.home'), code=303)
+
+
+@bridge.get('/bridge/farm-state/<job_id>')
+def farm_state(job_id):
+    device = _agent()
+    if not device:
+        return jsonify(error='unauthorized'), 401
+    with _lock:
+        job = _jobs.get(job_id)
+        if not job or job['device_id'] != device['id'] or job['action'] != 'farm':
+            return jsonify(error='unknown action'), 404
+        stop = bool(job.get('stop'))
+    _touch(device['id'])
+    return jsonify(stop=stop)
+
+
+@bridge.post('/bridge/tap')
+def tap():
+    target = request.form.get('target', '')
+    try:
+        x, y = float(request.form['x']), float(request.form['y'])
+        if not 0 <= x <= 1 or not 0 <= y <= 1:
+            raise ValueError('Coordenadas inválidas.')
+        group_id = _enqueue('tap', target, coords=[x, y])
+    except (ValueError, KeyError):
+        flash('Ponto do ecrã inválido.')
+        return redirect(url_for('bridge.home'), code=303)
+    return redirect(url_for('bridge.job_page', group_id=group_id), code=303)
 
 
 @bridge.get('/bridge/next')
@@ -337,7 +369,7 @@ def next_job():
             job = _jobs.get(job_id)
             if job and job['status'] == 'queued':
                 job['status'] = 'running'
-                return jsonify(id=job_id, action=job['action'], code=job.get('code'))
+                return jsonify(id=job_id, action=job['action'], code=job.get('code'), coords=job.get('coords'))
     return jsonify(job=None)
 
 
@@ -356,6 +388,21 @@ def result(job_id):
         job['status'] = data['status']
         job['detail'] = str(data.get('detail', ''))[:300]
     _touch(device['id'])
+    return jsonify(ok=True)
+
+
+@bridge.post('/bridge/trophies-report')
+def trophies_report():
+    device = _agent()
+    if not device:
+        return jsonify(error='unauthorized'), 401
+    data = request.get_json(silent=True) or {}
+    trophies = data.get('trophies')
+    if not isinstance(trophies, int) or not 0 <= trophies <= 1000000:
+        return jsonify(error='invalid trophies'), 400
+    with _db() as con:
+        con.execute('UPDATE devices SET trophies=?,trophies_at=?,last_seen=? WHERE id=?',
+                    (trophies, time.time(), time.time(), device['id']))
     return jsonify(ok=True)
 
 
