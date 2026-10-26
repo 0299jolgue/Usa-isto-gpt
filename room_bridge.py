@@ -8,7 +8,7 @@ import threading
 import time
 from collections import deque
 from urllib.parse import parse_qs, urlparse
-from flask import Blueprint, jsonify, redirect, render_template_string, request
+from flask import Blueprint, jsonify, redirect, render_template, request
 
 bridge = Blueprint('bridge', __name__)
 _lock = threading.RLock()
@@ -26,19 +26,20 @@ _LABELS = {
     'tapped': 'Toque em Jogar enviado ao LDPhone; confirma no jogo',
     'complete': 'Teste de IA terminado',
 }
-_PAGE = '''<!doctype html><html lang="pt"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Entrar na sala</title><style>body{font:17px system-ui;max-width:520px;margin:2rem auto;padding:0 1rem}
-input,button{font:inherit;padding:.7rem;margin:.35rem 0;width:100%;box-sizing:border-box}
-p{line-height:1.5}pre{white-space:pre-wrap;word-break:break-all;background:#eee;padding:1rem}</style>
-<h1>Entrar na sala</h1><p>LDPhone: {{ 'ligado' if online else 'desligado' }}</p>
-{% if not online %}<p>Uma vez no Termux do LDPhone, executa:</p>
-<pre>curl -fsSL {{ base }}/agent.py -o /sdcard/Download/ldphone_agent.py &amp;&amp; python /sdcard/Download/ldphone_agent.py {{ base }}</pre>
-<p>Deixa o agente a correr. Esta página mostra “ligado” automaticamente.</p>
-<script>setInterval(async()=>{try{let r=await fetch('/bridge/online');if((await r.json()).online)location.reload()}catch(e){}},3000)</script>{% endif %}
-<form method="post" action="/bridge/join"><input name="code" placeholder="Código ou link da sala" required>
-<button>Entrar com a conta do LDPhone</button></form>
-<form method="post" action="/bridge/play"><button>Iniciar partida no LDPhone</button></form>
-<form method="post" action="/bridge/ai"><button>Testar IA durante 20 segundos</button></form></html>'''
+
+
+def _job_label(job):
+    state, action = job['status'], job['action']
+    if state == 'running':
+        return {'join': 'A abrir o convite', 'play': 'A tocar em Jogar',
+                'ai': 'A analisar imagens e jogar'}[action]
+    if state == 'failed':
+        return {'join': 'Não foi possível abrir o convite',
+                'play': 'Não foi possível iniciar a partida',
+                'ai': 'Falha no teste de IA'}[action]
+    if state == 'queued' and time.monotonic() - _last_seen >= 15:
+        return 'LDPhone desligado; inicia o agente no Termux'
+    return _LABELS.get(state, state)
 
 
 def normalize_code(value):
@@ -61,9 +62,14 @@ def _agent():
 
 @bridge.get('/bridge')
 def home():
+    return _render_home()
+
+
+def _render_home(error=None, status_code=200):
     with _lock:
-        return render_template_string(_PAGE, online=time.monotonic() - _last_seen < 15,
-                                      base='https://' + request.host.split(':', 1)[0])
+        page = render_template('bridge.html', online=time.monotonic() - _last_seen < 15,
+                               base='https://' + request.host.split(':', 1)[0], error=error)
+    return page, status_code
 
 
 @bridge.get('/bridge/online')
@@ -93,10 +99,10 @@ def join():
     try:
         code = normalize_code(request.form.get('code', ''))
     except ValueError:
-        return jsonify(error='invalid room code'), 400
+        return _render_home('Código inválido. Confirma o código ou cola o link completo da sala.', 400)
     with _lock:
         if len(_pending) >= 4:
-            return jsonify(error='queue full'), 429
+            return _render_home('Há demasiadas ações em espera. Tenta novamente dentro de instantes.', 429)
         job_id = secrets.token_urlsafe(12)
         _jobs[job_id] = {'action': 'join', 'code': code, 'status': 'queued', 'created': time.monotonic()}
         _pending.append(job_id)
@@ -107,7 +113,7 @@ def join():
 def play():
     with _lock:
         if len(_pending) >= 4:
-            return jsonify(error='queue full'), 429
+            return _render_home('Há demasiadas ações em espera. Tenta novamente dentro de instantes.', 429)
         job_id = secrets.token_urlsafe(12)
         _jobs[job_id] = {'action': 'play', 'status': 'queued', 'created': time.monotonic()}
         _pending.append(job_id)
@@ -118,7 +124,7 @@ def play():
 def ai():
     with _lock:
         if len(_pending) >= 4:
-            return jsonify(error='queue full'), 429
+            return _render_home('Há demasiadas ações em espera. Tenta novamente dentro de instantes.', 429)
         job_id = secrets.token_urlsafe(12)
         _jobs[job_id] = {'action': 'ai', 'status': 'queued', 'created': time.monotonic()}
         _pending.append(job_id)
@@ -131,20 +137,11 @@ def job_page(job_id):
         job = _jobs.get(job_id)
         if not job:
             return jsonify(error='unknown job'), 404
-        action, state = job['action'], job['status']
+        action = job['action']
         title = 'Sala ' + job['code'] if action == 'join' else ('Teste de IA' if action == 'ai' else 'Iniciar partida')
-        label = ('A analisar imagens e jogar' if state == 'running' and action == 'ai'
-                 else 'A tocar em Jogar' if state == 'running' and action == 'play'
-                 else 'Falha no teste de IA' if state == 'failed' and action == 'ai'
-                 else 'Não foi possível iniciar a partida' if state == 'failed' and action == 'play'
-                 else _LABELS.get(state, state))
-        if state == 'queued' and time.monotonic() - _last_seen >= 15:
-            label = 'LDPhone desligado; inicia o agente no Termux'
-    return f'''<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><h1>{title}</h1>
-<p id="status">{label}</p><a href="/bridge">Voltar</a><script>
-setInterval(async()=>{{let r=await fetch('/bridge/status/{job_id}');if(r.ok){{let j=await r.json();
-document.getElementById('status').textContent=j.label+(j.detail?' — '+j.detail:'');}}}},2000)
-</script>'''
+        return render_template('job.html', title=title, job_id=job_id,
+                               state=job['status'], label=_job_label(job),
+                               detail=job.get('detail', ''))
 
 
 @bridge.get('/bridge/status/<job_id>')
@@ -156,14 +153,7 @@ def status(job_id):
         if job['status'] in ('queued', 'running') and time.monotonic() - job['created'] > 90:
             job['status'] = 'failed'
             job['detail'] = 'Tempo esgotado sem confirmação do agente.'
-        label = ('A analisar imagens e jogar' if job['status'] == 'running' and job['action'] == 'ai'
-                 else 'A tocar em Jogar' if job['status'] == 'running' and job['action'] == 'play'
-                 else 'Falha no teste de IA' if job['status'] == 'failed' and job['action'] == 'ai'
-                 else 'Não foi possível iniciar a partida' if job['status'] == 'failed' and job['action'] == 'play'
-                 else _LABELS.get(job['status'], job['status']))
-        if job['status'] == 'queued' and time.monotonic() - _last_seen >= 15:
-            label = 'LDPhone desligado; inicia o agente no Termux'
-        return jsonify(status=job['status'], label=label,
+        return jsonify(status=job['status'], label=_job_label(job),
                        detail=job.get('detail', ''))
 
 
