@@ -18,7 +18,7 @@ from flask import Blueprint, flash, jsonify, redirect, render_template, request,
 
 bridge = Blueprint('bridge', __name__)
 _lock = threading.RLock()
-_pairs, _jobs, _groups = {}, {}, {}
+_jobs, _groups = {}, {}
 _pending = defaultdict(deque)
 _CODE = re.compile(r'^X[QWERTYUPASDFGHJKLZCVBNM23456789]{2,12}$')
 _TAG = re.compile(r'^#[0289PYLQGRJCUV]{3,14}$')
@@ -52,6 +52,7 @@ with _db() as _con:
             screenshot_at REAL
         );
         CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS pairing_codes (code_hash TEXT PRIMARY KEY, expires_at REAL NOT NULL);
     ''')
 _DB.chmod(0o600)
 
@@ -148,13 +149,11 @@ def _enqueue(action, target, code=None, coords=None):
 
 @bridge.get('/bridge')
 def home():
-    with _lock:
-        for code, expiry in list(_pairs.items()):
-            if expiry < time.time():
-                del _pairs[code]
-        pair = secrets.token_urlsafe(8)
-        _pairs[pair] = time.time() + 600
+    pair = secrets.token_urlsafe(12)
     with _db() as con:
+        con.execute('DELETE FROM pairing_codes WHERE expires_at < ?', (time.time(),))
+        con.execute('INSERT INTO pairing_codes(code_hash,expires_at) VALUES(?,?)',
+                    (hashlib.sha256(pair.encode()).hexdigest(), time.time() + 86400))
         has_key = bool(con.execute('SELECT value FROM settings WHERE key=?', ('brawl_api_key',)).fetchone())
     return render_template('bridge.html', devices=_devices(), pair=pair, has_key=has_key,
                            base='https://' + request.host.split(':', 1)[0])
@@ -179,9 +178,11 @@ def register():
             con.execute('UPDATE devices SET last_seen=? WHERE id=?', (time.time(), row['id']))
             return jsonify(ok=True, id=row['id'], name=row['name'], player_tag=row['player_tag'])
     pair = str(data.get('pair', ''))
-    with _lock:
-        if _pairs.get(pair, 0) < time.time():
-            return jsonify(error='pairing code missing or expired'), 403
+    with _db() as con:
+        valid_pair = con.execute('SELECT 1 FROM pairing_codes WHERE code_hash=? AND expires_at>?',
+                                 (hashlib.sha256(pair.encode()).hexdigest(), time.time())).fetchone()
+    if not valid_pair:
+        return jsonify(error='pairing code missing or expired; reload panel and copy new command'), 403
     with _db() as con:
         count = con.execute('SELECT COUNT(*) FROM devices').fetchone()[0]
         device_id, name = secrets.token_urlsafe(9), f'LDPhone {count + 1}'
