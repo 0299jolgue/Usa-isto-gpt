@@ -52,10 +52,19 @@ with _db() as _con:
             screenshot_at REAL
         );
         CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS pairing_codes (code_hash TEXT PRIMARY KEY, expires_at REAL NOT NULL);
     ''')
 _DB.chmod(0o600)
 
+
+
+
+def _pair_code():
+    # All instances of the same deployment can validate this without sharing
+    # process memory or a local SQLite file. Changing PANEL_PASSWORD rotates it.
+    seed = os.environ.get('PANEL_PASSWORD') or (
+        'pbkdf2:sha256:600000$5fYyRVIzm6kx6IEE$'
+        '3044c87a7ccdf0c49cd87fc754e1afee3780e8822c53cd4dd24953627a968eb8')
+    return hashlib.sha256(('brawl-room-pair-v3:' + seed).encode()).hexdigest()[:24]
 
 def _devices():
     with _db() as con:
@@ -149,13 +158,9 @@ def _enqueue(action, target, code=None, coords=None):
 
 @bridge.get('/bridge')
 def home():
-    pair = secrets.token_urlsafe(12)
     with _db() as con:
-        con.execute('DELETE FROM pairing_codes WHERE expires_at < ?', (time.time(),))
-        con.execute('INSERT INTO pairing_codes(code_hash,expires_at) VALUES(?,?)',
-                    (hashlib.sha256(pair.encode()).hexdigest(), time.time() + 86400))
         has_key = bool(con.execute('SELECT value FROM settings WHERE key=?', ('brawl_api_key',)).fetchone())
-    return render_template('bridge.html', devices=_devices(), pair=pair, has_key=has_key,
+    return render_template('bridge.html', devices=_devices(), pair=_pair_code(), has_key=has_key,
                            base='https://' + request.host.split(':', 1)[0])
 
 
@@ -178,11 +183,8 @@ def register():
             con.execute('UPDATE devices SET last_seen=? WHERE id=?', (time.time(), row['id']))
             return jsonify(ok=True, id=row['id'], name=row['name'], player_tag=row['player_tag'])
     pair = str(data.get('pair', ''))
-    with _db() as con:
-        valid_pair = con.execute('SELECT 1 FROM pairing_codes WHERE code_hash=? AND expires_at>?',
-                                 (hashlib.sha256(pair.encode()).hexdigest(), time.time())).fetchone()
-    if not valid_pair:
-        return jsonify(error='pairing code missing or expired; reload panel and copy new command'), 403
+    if not secrets.compare_digest(pair, _pair_code()):
+        return jsonify(error='pairing code invalid; refresh panel and copy current command'), 403
     with _db() as con:
         count = con.execute('SELECT COUNT(*) FROM devices').fetchone()[0]
         device_id, name = secrets.token_urlsafe(9), f'LDPhone {count + 1}'
