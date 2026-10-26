@@ -172,7 +172,7 @@ def swipe_action(action, width, height):
     if not (0 <= coords[0] < width and 0 <= coords[2] < width and
             0 <= coords[1] < height and 0 <= coords[3] < height):
         raise RuntimeError('A IA devolveu coordenadas fora do ecrã')
-    duration_ms = max(80, min(600, int(action['duration_ms'])))
+    duration_ms = max(80, min(2200, int(action['duration_ms'])))
     command = ['/system/bin/input', 'touchscreen', 'swipe',
                *(str(n) for n in coords), str(duration_ms)]
     gesture = subprocess.run(['su', '-c', shlex.join(command)],
@@ -509,6 +509,8 @@ def run_ai(base, token, duration=20, stop_check=None, auto_start=True):
         deadline = time.monotonic() + duration if duration is not None else None
         last_stop_check = 0
         connection.timeout = 20
+        if connection.sock:
+            connection.sock.settimeout(20)
         while deadline is None or time.monotonic() < deadline:
             if stop_check and time.monotonic() - last_stop_check > 2:
                 last_stop_check = time.monotonic()
@@ -577,20 +579,35 @@ def run_ai(base, token, duration=20, stop_check=None, auto_start=True):
             movement = data.get('movement') if action['kind'] != 'tap' and state == 'match' else None
             if movement:
                 if touch:
-                    touch.move(movement, data['width'], data['height'])
-                else:
+                    try:
+                        touch.move(movement, data['width'], data['height'])
+                    except (OSError, RuntimeError) as exc:
+                        print('Multitouch falhou; gesto longo:', exc, flush=True)
+                        touch.close()
+                        touch = None
+                if not touch:
                     long_move = dict(movement, duration_ms=1500)
                     swipe_action(long_move, data['width'], data['height'])
                 actions += 1
             elif touch:
-                touch.release_move()
+                try:
+                    touch.release_move()
+                except (OSError, RuntimeError) as exc:
+                    print('Multitouch falhou:', exc, flush=True)
+                    touch.close()
+                    touch = None
             if action['kind'] == 'tap':
                 x, y = int(action['x1']), int(action['y1'])
                 width, height = data['width'], data['height']
                 if not (0 <= x < width and 0 <= y < height):
                     raise RuntimeError('Toque fora do ecrã')
                 if touch:
-                    touch.release_move()
+                    try:
+                        touch.release_move()
+                    except (OSError, RuntimeError) as exc:
+                        print('Multitouch falhou; toque normal:', exc, flush=True)
+                        touch.close()
+                        touch = None
                 gesture = subprocess.run(['su', '-c', f'/system/bin/input tap {x} {y}'],
                                          capture_output=True, text=True, timeout=5)
                 if gesture.returncode:
@@ -599,8 +616,13 @@ def run_ai(base, token, duration=20, stop_check=None, auto_start=True):
                 time.sleep(2.5 if action.get('reason') == 'exit_button' else 1.5)
             elif action['kind'] == 'attack':
                 if touch:
-                    touch.attack(action, data['width'], data['height'])
-                else:
+                    try:
+                        touch.attack(action, data['width'], data['height'])
+                    except (OSError, RuntimeError) as exc:
+                        print('Multitouch falhou; ataque normal:', exc, flush=True)
+                        touch.close()
+                        touch = None
+                if not touch:
                     swipe_action(action, data['width'], data['height'])
                 actions += 1
             elif action['kind'] == 'move' and not movement:
