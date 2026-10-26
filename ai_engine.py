@@ -58,6 +58,18 @@ def decide(png):
     if not (320 <= width <= 8192 and 180 <= height <= 8192):
         raise ValueError('Dimensões da captura inválidas')
     decoded = time.perf_counter()
+    from pyla_state import classify
+    state, state_confidence = classify(frame)
+    if state != 'match':
+        positions = {'lobby': (.88, .88), 'end': (.865, .91),
+                     'trophy_reward': (.865, .91)}
+        action = ({'kind': 'tap', 'x1': round(positions[state][0] * width),
+                   'y1': round(positions[state][1] * height)}
+                  if state in positions else {'kind': 'none'})
+        return {'action': action, 'state': state, 'state_confidence': state_confidence,
+                'width': width, 'height': height, 'detections': {},
+                'timings_ms': {'decode': round((decoded-started)*1000, 1),
+                               'inference': 0, 'total': round((time.perf_counter()-started)*1000, 1)}}
     # Match Pyla's top-left letterbox preprocessing, including its gray padding.
     scale = min(640 / width, 640 / height)
     resized_w, resized_h = int(width * scale), int(height * scale)
@@ -103,7 +115,8 @@ def decide(png):
                   'confidence': round(player[2], 3)}
     else:
         action = {'kind': 'none'}
-    return {'action': action, 'width': width, 'height': height,
+    return {'action': action, 'state': state, 'state_confidence': state_confidence,
+            'width': width, 'height': height,
             'detections': {name: len(rows) for name, rows in found.items()},
             'timings_ms': {'decode': round((decoded-started)*1000, 1),
                            'inference': round((inferred-decoded)*1000, 1),
