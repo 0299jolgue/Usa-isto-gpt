@@ -14,6 +14,7 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 public final class MainActivity extends Activity {
+    private static final String DEFAULT_SITE = "https://joinbrawl.shardweb.app";
     private EditText site;
 
     @Override public void onCreate(Bundle state) {
@@ -35,8 +36,14 @@ public final class MainActivity extends Activity {
         site.setSingleLine(true);
         site.setTextColor(Color.WHITE);
         site.setHintTextColor(Color.LTGRAY);
-        site.setHint("https://teu-site.shardweb.app");
-        site.setText(getPreferences(0).getString("site", "https://brawl-stars-room-jo.shardweb.app"));
+        site.setHint(DEFAULT_SITE);
+        String savedSite = getPreferences(0).getString("site", DEFAULT_SITE);
+        if ("https://brawl-stars-room-jo.shardweb.app".equals(savedSite)
+                || "https://brawl-stars-room-join.shardweb.app".equals(savedSite)) {
+            savedSite = DEFAULT_SITE;
+            getPreferences(0).edit().putString("site", savedSite).apply();
+        }
+        site.setText(savedSite);
         root.addView(site);
         Button open = new Button(this);
         open.setText("Abrir menu");
