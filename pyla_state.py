@@ -10,13 +10,13 @@ BASE = f'https://raw.githubusercontent.com/PylaAI/PylaAI/{COMMIT}/images/'
 CACHE = Path(os.environ.get('PYLA_STATE_DIR', '/tmp/pyla-states'))
 # PylaAI's regions are specified for a 1920x1080 capture.
 STATES = (
-    ('end', 'end_results/victory.png', (20, 10, 650, 200), .78),
-    ('end', 'end_results/defeat.png', (20, 10, 650, 200), .78),
-    ('end', 'end_results/draw.png', (20, 10, 650, 200), .78),
-    ('end', 'end_results/1st.png', (20, 10, 650, 200), .85),
-    ('end', 'end_results/2nd.png', (20, 10, 650, 200), .85),
-    ('end', 'end_results/3rd.png', (20, 10, 650, 200), .85),
-    ('end', 'end_results/4th.png', (20, 10, 650, 200), .85),
+    ('end_victory', 'end_results/victory.png', (20, 10, 650, 200), .78),
+    ('end_defeat', 'end_results/defeat.png', (20, 10, 650, 200), .78),
+    ('end_draw', 'end_results/draw.png', (20, 10, 650, 200), .78),
+    ('end_place_1', 'end_results/1st.png', (20, 10, 650, 200), .85),
+    ('end_place_2', 'end_results/2nd.png', (20, 10, 650, 200), .85),
+    ('end_place_3', 'end_results/3rd.png', (20, 10, 650, 200), .85),
+    ('end_place_4', 'end_results/4th.png', (20, 10, 650, 200), .85),
     ('lobby', 'states/lobby_menu.png', (1790, 20, 75, 65), .78),
     ('match_making', 'states/exit_match_making.png', (0, 925, 340, 135), .78),
     ('trophy_reward', 'states/trophies_screen.png', (1545, 915, 365, 168), .78),
