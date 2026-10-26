@@ -132,6 +132,20 @@ def _ai_post(connection, path, token, body=b'', content_type='application/octet-
     return json.loads(raw)
 
 
+def capture_screenshot(base, token):
+    shot = subprocess.run(['su', '-c', '/system/bin/screencap -p'],
+                          capture_output=True, timeout=7)
+    if shot.returncode:
+        raise RuntimeError('Captura do ecrã falhou')
+    width, height = png_dimensions(shot.stdout)
+    connection = http.client.HTTPSConnection(urlparse(base).netloc, timeout=20)
+    try:
+        _ai_post(connection, '/bridge/screenshot-upload', token, shot.stdout, 'image/png')
+    finally:
+        connection.close()
+    return 'complete', f'Print guardado no painel ({width}x{height}).'
+
+
 def run_ai(base, token):
     host = urlparse(base).netloc
     connection = http.client.HTTPSConnection(host, timeout=120)
@@ -182,9 +196,10 @@ def run_ai(base, token):
 
 
 def main():
-    if len(sys.argv) != 2:
-        raise SystemExit('Uso: python ldphone_agent.py https://teu-site.shardweb.app')
+    if len(sys.argv) not in (2, 3):
+        raise SystemExit('Uso: python ldphone_agent.py https://teu-site.shardweb.app CODIGO_DE_LIGACAO')
     base = sys.argv[1].rstrip('/')
+    pair = sys.argv[2] if len(sys.argv) == 3 else ''
     parsed = urlparse(base)
     if parsed.scheme != 'https' or not parsed.netloc or parsed.path:
         raise SystemExit('Indica o endereço HTTPS do site, sem caminho no fim.')
@@ -196,15 +211,16 @@ def main():
     while True:
         try:
             if not registered:
-                request_json(base, '/bridge/register', payload={'token': token})
+                registration = request_json(base, '/bridge/register', payload={'token': token, 'pair': pair})
                 registered = True
-                print('Agente ligado. Deixa o Termux aberto.', flush=True)
+                print('Agente ligado:', registration.get('name', 'LDPhone'), flush=True)
             job = request_json(base, '/bridge/next', token=token)
-            if job.get('id') and job.get('action') in ('join', 'play', 'ai'):
+            if job.get('id') and job.get('action') in ('join', 'play', 'ai', 'snapshot'):
                 print('A executar:', job['action'], job.get('code') or '', flush=True)
                 try:
                     status, detail = (open_room(job['code']) if job['action'] == 'join'
                                       else run_ai(base, token) if job['action'] == 'ai'
+                                      else capture_screenshot(base, token) if job['action'] == 'snapshot'
                                       else start_match())
                 except Exception as exc:
                     status, detail = 'failed', f'{type(exc).__name__}: {exc}'
