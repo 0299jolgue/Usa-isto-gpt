@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import random
 import shlex
 import shutil
 import subprocess
@@ -126,11 +127,13 @@ def png_dimensions(data):
     return width, height
 
 
-def _ai_post(connection, path, token, body=b'', content_type='application/octet-stream'):
-    connection.request('POST', path, body=body,
-                       headers={'Authorization': 'Bearer ' + token,
-                                'Content-Type': content_type,
-                                'Content-Length': str(len(body))})
+def _ai_post(connection, path, token, body=b'', content_type='application/octet-stream', extra_headers=None):
+    headers = {'Authorization': 'Bearer ' + token,
+               'Content-Type': content_type,
+               'Content-Length': str(len(body))}
+    if extra_headers:
+        headers.update(extra_headers)
+    connection.request('POST', path, body=body, headers=headers)
     response = connection.getresponse()
     raw = response.read()
     if response.status >= 400:
@@ -181,8 +184,11 @@ def swipe_action(action, width, height):
 def find_exit_button(png, width, height):
     if not shutil.which('tesseract'):
         return None
-    result = subprocess.run(['tesseract', 'stdin', 'stdout', 'tsv', '--psm', '11'],
-                            input=png, capture_output=True, timeout=8)
+    try:
+        result = subprocess.run(['tesseract', 'stdin', 'stdout', 'tsv', '--psm', '11'],
+                                input=png, capture_output=True, timeout=8)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
     if result.returncode:
         return None
     for row in csv.DictReader(io.StringIO(result.stdout.decode('utf-8', 'replace')), delimiter='\t'):
@@ -412,6 +418,64 @@ class TouchController:
                 stream.close()
 
 
+def choose_post_frame_action(action, state, player_seen, no_player_seconds,
+                             exit_button, width, height):
+    if exit_button:
+        return {'kind': 'tap', 'x1': exit_button[0], 'y1': exit_button[1],
+                'reason': 'exit_button'}
+    if state == 'match' and not player_seen and no_player_seconds > 20 \
+            and action['kind'] != 'tap':
+        return {'kind': 'tap', 'x1': round(width * .865),
+                'y1': round(height * .91), 'reason': 'stuck_screen'}
+    return action
+
+
+class TacticsMemory:
+    """Small on-device bandit: retain wins/losses per movement policy."""
+    FILE = Path.home() / '.brawl_room_tactics.json'
+    NAMES = ('aggressive', 'balanced', 'cautious')
+
+    def __init__(self):
+        try:
+            stored = json.loads(self.FILE.read_text())
+        except (OSError, ValueError):
+            stored = {}
+        if not isinstance(stored, dict):
+            stored = {}
+        self.stats = {}
+        for name in self.NAMES:
+            row = stored.get(name, {})
+            if not isinstance(row, dict):
+                row = {}
+            clean = {}
+            for key in ('wins', 'losses'):
+                try:
+                    value = float(row.get(key, 0))
+                    clean[key] = value if 0 <= value <= 100000 else 0.0
+                except (TypeError, ValueError):
+                    clean[key] = 0.0
+            self.stats[name] = clean
+        self.current = self.choose()
+
+    def choose(self):
+        return max(self.NAMES, key=lambda name: random.betavariate(
+            self.stats[name]['wins'] + 1, self.stats[name]['losses'] + 1))
+
+    def record(self, result):
+        if result not in ('win', 'loss', 'draw'):
+            return
+        row = self.stats[self.current]
+        row['wins'] += 1 if result == 'win' else .5 if result == 'draw' else 0
+        row['losses'] += 1 if result == 'loss' else .5 if result == 'draw' else 0
+        temporary = self.FILE.with_suffix('.tmp')
+        temporary.write_text(json.dumps(self.stats, separators=(',', ':')))
+        temporary.replace(self.FILE)
+        previous = self.current
+        self.current = self.choose()
+        print(f'Aprendizagem: {previous} resultado={result}; próxima tática={self.current}; '
+              f'estatísticas={self.stats}', flush=True)
+
+
 def run_ai(base, token, duration=20, stop_check=None, auto_start=True):
     host = urlparse(base).netloc
     connection = http.client.HTTPSConnection(host, timeout=120)
@@ -421,6 +485,10 @@ def run_ai(base, token, duration=20, stop_check=None, auto_start=True):
     touch = None
     no_detection_since = time.monotonic()
     last_exit_scan = 0
+    step_errors = 0
+    learner = TacticsMemory() if duration is None else None
+    in_match = False
+    awaiting_new_match = False
     try:
         _ai_post(connection, '/ai/ready', token)
         if auto_start:
@@ -436,7 +504,7 @@ def run_ai(base, token, duration=20, stop_check=None, auto_start=True):
             time.sleep(2)
         try:
             touch = TouchController()
-        except (OSError, RuntimeError, ValueError) as exc:
+        except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
             print('Multitouch indisponível; a usar gestos longos:', exc, flush=True)
         deadline = time.monotonic() + duration if duration is not None else None
         last_stop_check = 0
@@ -447,28 +515,65 @@ def run_ai(base, token, duration=20, stop_check=None, auto_start=True):
                 if stop_check():
                     break
             begin = time.monotonic()
-            shot = subprocess.run(['su', '-c', '/system/bin/screencap -p'],
-                                  capture_output=True, timeout=5)
-            if shot.returncode or not shot.stdout.startswith(b'\x89PNG\r\n\x1a\n'):
-                raise RuntimeError('Captura do ecrã falhou')
-            data = _ai_post(connection, '/ai/step', token, shot.stdout, 'image/png')
+            try:
+                shot = subprocess.run(['su', '-c', '/system/bin/screencap -p'],
+                                      capture_output=True, timeout=7)
+                if shot.returncode or not shot.stdout.startswith(b'\x89PNG\r\n\x1a\n'):
+                    raise RuntimeError('Captura do ecrã falhou')
+                data = _ai_post(connection, '/ai/step', token, shot.stdout, 'image/png',
+                                extra_headers={'X-Strategy': learner.current if learner else 'balanced'})
+                step_errors = 0
+            except (OSError, TimeoutError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
+                if 'HTTP 401' in str(exc) or 'HTTP 403' in str(exc):
+                    raise
+                step_errors += 1
+                if touch:
+                    try:
+                        touch.release_move()
+                    except (OSError, RuntimeError) as touch_exc:
+                        print('Multitouch falhou:', touch_exc, flush=True)
+                        touch.close()
+                        touch = None
+                print(f'IA falha temporária {step_errors}/4: {exc}', flush=True)
+                connection.close()
+                connection = http.client.HTTPSConnection(host, timeout=20)
+                if step_errors >= 4:
+                    raise RuntimeError(f'IA parou após quatro falhas seguidas: {exc}') from exc
+                time.sleep(1)
+                continue
             action = data['action']
             state = data.get('state', 'match')
             player_seen = bool(data.get('detections', {}).get('player', 0))
-            if (state == 'end' or (state == 'match' and not player_seen and
-                    time.monotonic() - no_detection_since > 5)) and time.monotonic() - last_exit_scan > 3:
+            no_player_seconds = time.monotonic() - no_detection_since
+            exit_button = None
+            if (state.startswith('end') or (state == 'match' and not player_seen and
+                    no_player_seconds > 4)) and time.monotonic() - last_exit_scan > 2:
                 last_exit_scan = time.monotonic()
                 exit_button = find_exit_button(shot.stdout, data['width'], data['height'])
                 if exit_button:
-                    action = {'kind': 'tap', 'x1': exit_button[0], 'y1': exit_button[1]}
                     print(f'Botão Sair encontrado em {exit_button}.', flush=True)
-            if state != 'match' or player_seen:
+            action = choose_post_frame_action(action, state, player_seen, no_player_seconds,
+                                              exit_button, data['width'], data['height'])
+            if learner:
+                if state in ('lobby', 'match_making'):
+                    awaiting_new_match = False
+                if state == 'match' and player_seen and not awaiting_new_match:
+                    in_match = True
+                result = ('win' if state in ('end_victory', 'end_place_1') else
+                          'loss' if state.startswith('end_') and state != 'end_draw' else
+                          'draw' if state == 'end_draw' else
+                          'loss' if action.get('reason') == 'exit_button' and in_match else None)
+                if in_match and result:
+                    learner.record(result)
+                    try:
+                        request_json(base, '/bridge/learning-report', token=token,
+                                     payload=learner.stats)
+                    except (OSError, TimeoutError, ValueError, HttpStatus) as exc:
+                        print('Estatísticas por enviar:', exc, flush=True)
+                    in_match = False
+                    awaiting_new_match = True
+            if state != 'match' or player_seen or action.get('reason') == 'stuck_screen':
                 no_detection_since = time.monotonic()
-            elif time.monotonic() - no_detection_since > 15:
-                action = {'kind': 'tap', 'x1': round(data['width'] * .865),
-                          'y1': round(data['height'] * .91)}
-                no_detection_since = time.monotonic()
-                print('Sem jogador detetado há 15 s; a tentar avançar o ecrã.', flush=True)
             movement = data.get('movement') if action['kind'] != 'tap' and state == 'match' else None
             if movement:
                 if touch:
@@ -485,14 +590,13 @@ def run_ai(base, token, duration=20, stop_check=None, auto_start=True):
                 if not (0 <= x < width and 0 <= y < height):
                     raise RuntimeError('Toque fora do ecrã')
                 if touch:
-                    touch.tap(x, y, width, height)
-                else:
-                    gesture = subprocess.run(['su', '-c', f'/system/bin/input tap {x} {y}'],
-                                             capture_output=True, text=True, timeout=5)
-                    if gesture.returncode:
-                        raise RuntimeError('Toque falhou: ' + gesture.stderr.strip()[:100])
+                    touch.release_move()
+                gesture = subprocess.run(['su', '-c', f'/system/bin/input tap {x} {y}'],
+                                         capture_output=True, text=True, timeout=5)
+                if gesture.returncode:
+                    raise RuntimeError('Toque falhou: ' + gesture.stderr.strip()[:100])
                 actions += 1
-                time.sleep(2)
+                time.sleep(2.5 if action.get('reason') == 'exit_button' else 1.5)
             elif action['kind'] == 'attack':
                 if touch:
                     touch.attack(action, data['width'], data['height'])
