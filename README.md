@@ -1,6 +1,6 @@
-# Entrar numa sala do Brawl Stars com o LDPhone
+# Brawl Room: várias contas e telemóveis
 
-O site envia códigos de sala para um agente Python no Termux do LDPhone. O agente abre o convite oficial no Brawl Stars instalado. O próprio jogo trata do login da conta convidada e da ligação TCP ao servidor.
+O site controla vários agentes Python, um por LDPhone. Cada agente usa a conta aberta na aplicação oficial e recebe ações individuais ou para todos os telemóveis ligados.
 
 ## Servidor
 
@@ -8,9 +8,17 @@ Importa este repositório para a ShardCloud. `main.py` inicia Flask com Waitress
 
 ## Instalação no LDPhone
 
-Na página `/bridge` aparece **um único comando** para o Termux. Executa-o uma vez e deixa o agente aberto. A partir daí, escreve apenas o código ou link da sala no site. O agente abre o convite automaticamente.
+Entra no painel, copia o comando de ligação e executa-o no Termux de cada LDPhone. O comando inclui um código de emparelhamento válido por dez minutos. Os agentes antigos precisam de ser atualizados e emparelhados após esta versão.
 
-O site distingue entre convite aberto e pedido de entrada `14358` observado na rede. A presença na sala deve ser confirmada no ecrã do jogo.
+O painel oferece entrar numa sala, iniciar partida, testar a IA e tirar prints, por telemóvel ou para todos os ligados. Cada dispositivo tem nome, tag do jogador, estado e última captura.
+
+## Login e dados
+
+O utilizador inicial é `jolgue`; a senha fornecida pelo proprietário está guardada como hash. `PANEL_USERNAME`, `PANEL_PASSWORD` e `PANEL_SESSION_SECRET` permitem trocar as credenciais por variáveis de ambiente. Dispositivos, tags, capturas e chave da API ficam em SQLite sob `BRAWL_STATE_DIR` (`/tmp/brawl-room-data` por omissão). Para persistirem entre reinstalações da ShardCloud, configura essa variável para um volume persistente.
+
+## Troféus
+
+Para mostrar os troféus de cada conta, guarda a tag do jogador no respetivo cartão e uma chave da API oficial no painel. A chave tem de autorizar o IP de saída da ShardCloud. O painel consulta `GET /v1/players/%23TAG` e mantém o número até à próxima atualização. Prints e controlo não precisam dessa chave.
 
 ## Teste da IA
 
