@@ -47,7 +47,7 @@ def ready():
     return _session
 
 
-def decide(png):
+def decide(png, strategy='balanced'):
     import cv2
     import numpy as np
     started = time.perf_counter()
@@ -61,11 +61,11 @@ def decide(png):
     from pyla_state import classify
     state, state_confidence = classify(frame)
     if state != 'match':
-        positions = {'lobby': (.88, .88), 'end': (.865, .91),
-                     'trophy_reward': (.865, .91)}
-        action = ({'kind': 'tap', 'x1': round(positions[state][0] * width),
-                   'y1': round(positions[state][1] * height)}
-                  if state in positions else {'kind': 'none'})
+        position = ((.865, .91) if state.startswith('end') or state == 'trophy_reward'
+                    else (.88, .88) if state == 'lobby' else None)
+        action = ({'kind': 'tap', 'x1': round(position[0] * width),
+                   'y1': round(position[1] * height)}
+                  if position else {'kind': 'none'})
         return {'action': action, 'state': state, 'state_confidence': state_confidence,
                 'width': width, 'height': height, 'detections': {},
                 'timings_ms': {'decode': round((decoded-started)*1000, 1),
@@ -91,6 +91,11 @@ def decide(png):
                          float(confidence[i])) for i in indices]
     player = max(found['player'], key=lambda row: row[2], default=None)
     enemies = found['enemy']
+    tactics = {
+        'aggressive': {'range': .12, 'attack_ms': 180},
+        'balanced': {'range': .18, 'attack_ms': 130},
+        'cautious': {'range': .28, 'attack_ms': 100},
+    }.get(strategy, {'range': .18, 'attack_ms': 130})
     movement = None
     if player:
         import math
@@ -99,9 +104,12 @@ def decide(png):
             dx, dy = target[0]-player[0], target[1]-player[1]
             distance = max(1., math.hypot(dx, dy))
             # Walk into range; strafe around enemies already in range.
-            if distance < width * .18:
+            if distance < width * tactics['range']:
                 direction = -1 if int(time.monotonic() / 3) % 2 else 1
-                move_dx, move_dy = -dy * direction, dx * direction
+                if strategy == 'cautious' and distance < width * .16:
+                    move_dx, move_dy = -dx, -dy
+                else:
+                    move_dx, move_dy = -dy * direction, dx * direction
             else:
                 move_dx, move_dy = dx, dy
             attack_x, attack_y = .897*width, .734*height
@@ -109,7 +117,7 @@ def decide(png):
             action = {'kind': 'attack', 'x1': round(attack_x), 'y1': round(attack_y),
                       'x2': round(attack_x + attack_radius*dx/distance),
                       'y2': round(attack_y + attack_radius*dy/distance),
-                      'duration_ms': 130, 'confidence': round(target[2], 3)}
+                      'duration_ms': tactics['attack_ms'], 'confidence': round(target[2], 3)}
         else:
             # Patrol when the nearest enemy is outside the camera view.
             move_dx, move_dy = width/2-player[0], height/2-player[1]
@@ -127,7 +135,7 @@ def decide(png):
     else:
         action = {'kind': 'none'}
     return {'action': action, 'state': state, 'state_confidence': state_confidence,
-            'width': width, 'height': height, 'movement': movement,
+            'width': width, 'height': height, 'movement': movement, 'strategy': strategy,
             'detections': {name: len(rows) for name, rows in found.items()},
             'timings_ms': {'decode': round((decoded-started)*1000, 1),
                            'inference': round((inferred-decoded)*1000, 1),
