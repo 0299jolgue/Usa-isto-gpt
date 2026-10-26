@@ -22,7 +22,10 @@ _contexts = {}
 
 def _context(device_id):
     if not device_id:
-        return {'max_health_pixels': 0, 'last_health': None, 'dodge_until': 0}
+        return {'max_health_pixels': 0, 'last_health': None, 'dodge_until': 0,
+                'last_super': 0, 'patrol_since': time.monotonic(), 'patrol_step': 0,
+                'last_target': None, 'last_enemy_seen': 0, 'last_move': None,
+                'last_player_seen': 0}
     now = time.monotonic()
     with _lock:
         for key, value in list(_contexts.items()):
@@ -30,8 +33,24 @@ def _context(device_id):
                 del _contexts[key]
         return _contexts.setdefault(device_id, {
             'max_health_pixels': 0, 'last_health': None,
-            'dodge_until': 0, 'seen': now,
+            'dodge_until': 0, 'last_super': 0, 'patrol_since': now,
+            'patrol_step': 0, 'last_target': None, 'last_enemy_seen': 0,
+            'last_move': None, 'last_player_seen': 0, 'seen': now,
         })
+
+
+def _super_ready(frame):
+    """PylaAI's yellow-pixel check, scaled from its 1920x1080 crop."""
+    import cv2
+    h, w = frame.shape[:2]
+    x1, x2 = round(w*1460/1920), round(w*1560/1920)
+    y1, y2 = round(h*830/1080), round(h*930/1080)
+    roi = frame[y1:y2, x1:x2]
+    if roi.size == 0:
+        return False
+    yellow = cv2.inRange(cv2.cvtColor(roi, cv2.COLOR_BGR2HSV),
+                         (17, 170, 200), (27, 255, 255))
+    return cv2.countNonZero(yellow) > (1800 * (w/1920) * (h/1080))
 
 
 def _health_pixels(frame, player):
@@ -169,17 +188,26 @@ def decide(png, strategy='balanced', device_id=None, mode=None, brawler=None):
     def clamp_x(value): return max(0, min(width-1, round(value)))
     def clamp_y(value): return max(0, min(height-1, round(value)))
     tactics = {
-        'aggressive': {'range': .12, 'attack_ms': 180, 'auto_fire_range': .105},
-        'balanced': {'range': .18, 'attack_ms': 130, 'auto_fire_range': .09},
-        'cautious': {'range': .28, 'attack_ms': 100, 'auto_fire_range': .075},
-    }.get(strategy, {'range': .18, 'attack_ms': 130, 'auto_fire_range': .09})
+        'aggressive': {'range': .13, 'attack_ms': 180, 'auto_fire_range': .13},
+        'balanced': {'range': .16, 'attack_ms': 130, 'auto_fire_range': .12},
+        'cautious': {'range': .21, 'attack_ms': 100, 'auto_fire_range': .11},
+    }.get(strategy, {'range': .16, 'attack_ms': 130, 'auto_fire_range': .12})
     context = _context(device_id)
     if device_id:
         context['seen'] = time.monotonic()
+    if enemies:
+        context['last_target'] = enemies[0]
+        context['last_enemy_seen'] = time.monotonic()
+    elif player and context['last_target'] and \
+            time.monotonic()-context['last_enemy_seen'] < .9:
+        remembered = context['last_target']
+        if math.hypot(remembered[0]-player[0], remembered[1]-player[1]) < width*.30:
+            enemies = [remembered]
     movement = None
     health = None
     tactic = 'patrol'
     if player:
+        context['last_player_seen'] = time.monotonic()
         green_pixels = _health_pixels(frame, player)
         if green_pixels >= max(8, width*.012):
             context['max_health_pixels'] = max(context['max_health_pixels'], green_pixels)
@@ -202,11 +230,9 @@ def decide(png, strategy='balanced', device_id=None, mode=None, brawler=None):
                 # Dodge diagonally away from the nearest attacker after a hit.
                 side = 1 if player[0] < width/2 else -1
                 move_dx, move_dy = -dx - side*dy, -dy + side*dx
-                action = {'kind': 'none'}
                 tactic = 'dodge'
-            elif health is not None and health < .62 and distance > width*.12:
+            elif health is not None and health < .48 and distance > width*.30:
                 move_dx, move_dy = -dx, -dy
-                action = {'kind': 'none'}
                 tactic = 'heal'
             elif len(nearby) >= 2:
                 center_x = sum(enemy[0] for enemy in nearby)/len(nearby)
@@ -221,9 +247,17 @@ def decide(png, strategy='balanced', device_id=None, mode=None, brawler=None):
                     move_dx, move_dy = -dy * direction, dx * direction
             else:
                 move_dx, move_dy = dx, dy
-            if tactic not in ('dodge', 'heal'):
+            attack_range = (.255 if brawler == 'shelly' else .29) * width
+            if tactic == 'heal' or distance > attack_range:
+                action = {'kind': 'none'}
+            else:
                 attack_x, attack_y = .897*width, .734*height
-                if distance <= width * tactics['auto_fire_range']:
+                if distance <= width*.20 and _super_ready(frame) and \
+                        time.monotonic()-context.get('last_super', 0) > 3:
+                    action = {'kind': 'super', 'x1': round(width*1512/1920),
+                              'y1': round(height*881/1080)}
+                    context['last_super'] = time.monotonic()
+                elif distance <= width * tactics['auto_fire_range']:
                     action = {'kind': 'auto_fire', 'x1': round(attack_x),
                               'y1': round(attack_y), 'confidence': round(target[2], 3)}
                 else:
@@ -232,7 +266,8 @@ def decide(png, strategy='balanced', device_id=None, mode=None, brawler=None):
                               'x2': clamp_x(attack_x + attack_radius*dx/distance),
                               'y2': clamp_y(attack_y + attack_radius*dy/distance),
                               'duration_ms': tactics['attack_ms'], 'confidence': round(target[2], 3)}
-                tactic = 'fight'
+                if tactic not in ('dodge', 'escape_group'):
+                    tactic = 'fight'
         elif boxes and (health is None or health >= .75):
             target = min(boxes, key=lambda box: (box[0]-player[0])**2 + (box[1]-player[1])**2)
             dx, dy = target[0]-player[0], target[1]-player[1]
@@ -248,11 +283,13 @@ def decide(png, strategy='balanced', device_id=None, mode=None, brawler=None):
                 action = {'kind': 'auto_fire', 'x1': round(attack_x), 'y1': round(attack_y)}
                 tactic = 'break_box'
         else:
-            # Patrol when the nearest enemy is outside the camera view.
-            move_dx, move_dy = width/2-player[0], height/2-player[1]
-            if math.hypot(move_dx, move_dy) < width * .07:
-                direction = -1 if int(time.monotonic() / 4) % 2 else 1
-                move_dx, move_dy = direction, .35
+            # The camera follows the player, so walking toward the frame center
+            # keeps issuing the same direction indefinitely. Change bearings.
+            if time.monotonic()-context['patrol_since'] > 1.6:
+                context['patrol_since'] = time.monotonic()
+                context['patrol_step'] = (context['patrol_step']+1) % 6
+            bearings = ((1, -.3), (.4, -1), (-.8, -.4), (-1, .3), (-.3, 1), (.8, .6))
+            move_dx, move_dy = bearings[context['patrol_step']]
             action = {'kind': 'none'}
         move_len = math.hypot(move_dx, move_dy)
         if move_len > .01:
@@ -262,12 +299,15 @@ def decide(png, strategy='balanced', device_id=None, mode=None, brawler=None):
                         'x2': clamp_x(move_x + move_radius*move_dx/move_len),
                         'y2': clamp_y(move_y + move_radius*move_dy/move_len),
                         'duration_ms': 420, 'confidence': round(player[2], 3)}
+            context['last_move'] = movement
     else:
         action = {'kind': 'none'}
+        if time.monotonic()-context['last_player_seen'] < 1.5:
+            movement = context['last_move']
     return {'action': action, 'state': state, 'state_confidence': state_confidence,
             'width': width, 'height': height, 'movement': movement, 'strategy': strategy,
             'mode': mode or 'unknown', 'health': round(health, 2) if health is not None else None,
-            'tactic': tactic,
+            'tactic': tactic, 'super_ready': _super_ready(frame) if player else False,
             'detections': {name: len(rows) for name, rows in found.items()},
             'timings_ms': {'decode': round((decoded-started)*1000, 1),
                            'inference': round((inferred-decoded)*1000, 1),
