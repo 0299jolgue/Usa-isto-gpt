@@ -161,6 +161,43 @@ def capture_screenshot(base, token, launch_game=True):
     return 'complete', f'Print guardado no painel ({width}x{height}).'
 
 
+def swipe_action(action, width, height):
+    coords = [int(action[key]) for key in ('x1', 'y1', 'x2', 'y2')]
+    if not (0 <= coords[0] < width and 0 <= coords[2] < width and
+            0 <= coords[1] < height and 0 <= coords[3] < height):
+        raise RuntimeError('A IA devolveu coordenadas fora do ecrã')
+    duration_ms = max(80, min(600, int(action['duration_ms'])))
+    command = ['/system/bin/input', 'touchscreen', 'swipe',
+               *(str(n) for n in coords), str(duration_ms)]
+    gesture = subprocess.run(['su', '-c', shlex.join(command)],
+                             capture_output=True, text=True, timeout=5)
+    if gesture.returncode:
+        raise RuntimeError('Gesto falhou: ' + gesture.stderr.strip()[:100])
+
+
+def find_exit_button(png, width, height):
+    if not shutil.which('tesseract'):
+        return None
+    result = subprocess.run(['tesseract', 'stdin', 'stdout', 'tsv', '--psm', '11'],
+                            input=png, capture_output=True, timeout=8)
+    if result.returncode:
+        return None
+    for row in csv.DictReader(io.StringIO(result.stdout.decode('utf-8', 'replace')), delimiter='\t'):
+        word = re.sub(r'[^A-Z]', '', row.get('text', '').upper())
+        if word not in ('SAIR', 'EXIT', 'SALIR'):
+            continue
+        try:
+            x, y = int(row['left']), int(row['top'])
+            w, h = int(row['width']), int(row['height'])
+            confidence = float(row['conf'])
+        except (KeyError, ValueError):
+            continue
+        cx, cy = x + w // 2, y + h // 2
+        if confidence >= 45 and width * .1 < cx < width and height * .4 < cy < height:
+            return cx, cy
+    return None
+
+
 def run_ai(base, token, duration=20, stop_check=None, auto_start=True):
     host = urlparse(base).netloc
     connection = http.client.HTTPSConnection(host, timeout=120)
@@ -168,6 +205,7 @@ def run_ai(base, token, duration=20, stop_check=None, auto_start=True):
     actions = 0
     cycles = []
     no_detection_since = time.monotonic()
+    last_exit_scan = 0
     try:
         _ai_post(connection, '/ai/ready', token)
         if auto_start:
@@ -196,13 +234,25 @@ def run_ai(base, token, duration=20, stop_check=None, auto_start=True):
                 raise RuntimeError('Captura do ecrã falhou')
             data = _ai_post(connection, '/ai/step', token, shot.stdout, 'image/png')
             action = data['action']
-            if data.get('state') != 'match' or data.get('detections', {}).get('player', 0):
+            state = data.get('state', 'match')
+            player_seen = bool(data.get('detections', {}).get('player', 0))
+            if (state == 'end' or (state == 'match' and not player_seen and
+                    time.monotonic() - no_detection_since > 5)) and time.monotonic() - last_exit_scan > 3:
+                last_exit_scan = time.monotonic()
+                exit_button = find_exit_button(shot.stdout, data['width'], data['height'])
+                if exit_button:
+                    action = {'kind': 'tap', 'x1': exit_button[0], 'y1': exit_button[1]}
+                    print(f'Botão Sair encontrado em {exit_button}.', flush=True)
+            if state != 'match' or player_seen:
                 no_detection_since = time.monotonic()
             elif time.monotonic() - no_detection_since > 15:
                 action = {'kind': 'tap', 'x1': round(data['width'] * .865),
                           'y1': round(data['height'] * .91)}
                 no_detection_since = time.monotonic()
                 print('Sem jogador detetado há 15 s; a tentar avançar o ecrã.', flush=True)
+            if data.get('movement') and action['kind'] not in ('tap',) and state == 'match':
+                swipe_action(data['movement'], data['width'], data['height'])
+                actions += 1
             if action['kind'] == 'tap':
                 x, y = int(action['x1']), int(action['y1'])
                 width, height = data['width'], data['height']
@@ -215,23 +265,12 @@ def run_ai(base, token, duration=20, stop_check=None, auto_start=True):
                 actions += 1
                 time.sleep(2)
             elif action['kind'] in ('attack', 'move'):
-                width, height = data['width'], data['height']
-                coords = [int(action[key]) for key in ('x1', 'y1', 'x2', 'y2')]
-                if not (0 <= coords[0] < width and 0 <= coords[2] < width and
-                        0 <= coords[1] < height and 0 <= coords[3] < height):
-                    raise RuntimeError('A IA devolveu coordenadas fora do ecrã')
-                gesture_ms = max(80, min(500, int(action['duration_ms'])))
-                command = ['/system/bin/input', 'touchscreen', 'swipe',
-                           *(str(n) for n in coords), str(gesture_ms)]
-                gesture = subprocess.run(['su', '-c', shlex.join(command)],
-                                         capture_output=True, text=True, timeout=5)
-                if gesture.returncode:
-                    raise RuntimeError('Gesto falhou: ' + gesture.stderr.strip()[:100])
+                swipe_action(action, data['width'], data['height'])
                 actions += 1
             frames += 1
             elapsed = (time.monotonic() - begin) * 1000
             cycles.append(elapsed)
-            print(f'IA frame={frames} estado={data.get("state", "?")} ação={action["kind"]} ciclo={elapsed:.0f}ms '
+            print(f'IA frame={frames} estado={state} movimento={bool(data.get("movement"))} ação={action["kind"]} ciclo={elapsed:.0f}ms '
                   f'servidor={data["timings_ms"]["total"]}ms', flush=True)
     finally:
         connection.close()
