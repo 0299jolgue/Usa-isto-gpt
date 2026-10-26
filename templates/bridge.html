@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="pt">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#101424">
+  <title>Brawl Room · Painel</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <span class="brand"><span class="brand-mark" aria-hidden="true">✳</span> BRAWL ROOM</span>
+      <span class="connection {{ 'online' if online else 'offline' }}" id="connection" aria-live="polite">
+        <span class="connection-dot" aria-hidden="true"></span>
+        <span id="connection-text">LDPhone {{ 'ligado' if online else 'desligado' }}</span>
+      </span>
+    </header>
+
+    <section class="hero">
+      <p class="eyebrow">CONTROLO REMOTO</p>
+      <h1>Entra na sala.<br><span>Joga à distância.</span></h1>
+      <p class="intro">Usa a conta que está aberta no LDPhone. Escolhe uma ação e acompanha o resultado aqui.</p>
+    </section>
+
+    {% if error %}<p class="page-error" role="alert">{{ error }}</p>{% endif %}
+
+    <section class="actions" aria-label="Ações">
+      <article class="card card-primary">
+        <div class="card-heading"><span class="step">01</span><div><h2>Entrar numa sala</h2><p>Escreve o código ou cola o link do convite.</p></div></div>
+        <form method="post" action="{{ url_for('bridge.join') }}" id="join-form">
+          <label for="room-code">Código da sala</label>
+          <input id="room-code" name="code" type="text" placeholder="Ex.: XAKPCRU" autocomplete="off" autocapitalize="characters" spellcheck="false" required>
+          <button class="button button-primary" type="submit">Entrar na sala <span aria-hidden="true">↗</span></button>
+        </form>
+      </article>
+
+      <article class="card card-secondary">
+        <div class="card-heading"><span class="step">02</span><div><h2>Iniciar partida</h2><p>Abre o jogo e toca em Jogar no LDPhone.</p></div></div>
+        <form method="post" action="{{ url_for('bridge.play') }}"><button class="button button-secondary" type="submit">Iniciar partida <span aria-hidden="true">→</span></button></form>
+      </article>
+
+      <article class="card card-secondary">
+        <div class="card-heading"><span class="step">03</span><div><h2>Testar a IA</h2><p>Analisa o ecrã e tenta jogar durante 20 segundos.</p></div></div>
+        <form method="post" action="{{ url_for('bridge.ai') }}"><button class="button button-secondary" type="submit">Testar IA <span aria-hidden="true">→</span></button></form>
+      </article>
+    </section>
+
+    <section class="setup" id="setup" {% if online %}hidden{% endif %}>
+      <div><span class="setup-kicker">CONFIGURAÇÃO</span><h2>Liga o LDPhone</h2><p>Executa no Termux e deixa o agente aberto.</p></div>
+      <div class="command-row"><code id="agent-command">curl -fsSL {{ base }}/agent.py -o /sdcard/Download/ldphone_agent.py &amp;&amp; python /sdcard/Download/ldphone_agent.py {{ base }}</code><button class="copy-button" id="copy-command" type="button">Copiar</button></div>
+    </section>
+
+    <footer>O Brawl Stars instalado no LDPhone faz a ligação ao jogo.</footer>
+  </main>
+  <script>
+    const badge = document.getElementById('connection');
+    const text = document.getElementById('connection-text');
+    const setup = document.getElementById('setup');
+    async function refreshConnection() {
+      try {
+        const response = await fetch('{{ url_for('bridge.online') }}', {cache: 'no-store'});
+        if (!response.ok) return;
+        const online = (await response.json()).online;
+        badge.classList.toggle('online', online);
+        badge.classList.toggle('offline', !online);
+        text.textContent = online ? 'LDPhone ligado' : 'LDPhone desligado';
+        setup.hidden = online;
+      } catch (_) {}
+    }
+    setInterval(refreshConnection, 4000);
+    document.getElementById('join-form').addEventListener('submit', () => {
+      const field = document.getElementById('room-code');
+      if (!field.value.trim().startsWith('http')) field.value = field.value.trim().toUpperCase();
+    });
+    document.getElementById('copy-command').addEventListener('click', async () => {
+      const command = document.getElementById('agent-command').textContent;
+      try {
+        await navigator.clipboard.writeText(command);
+        const button = document.getElementById('copy-command');
+        button.textContent = 'Copiado';
+        setTimeout(() => button.textContent = 'Copiar', 1800);
+      } catch (_) {}
+    });
+  </script>
+</body>
+</html>
