@@ -185,26 +185,28 @@ def swipe_action(action, width, height):
 def find_exit_button(png, width, height):
     if not shutil.which('tesseract'):
         return None
-    try:
-        result = subprocess.run(['tesseract', 'stdin', 'stdout', 'tsv', '--psm', '11'],
-                                input=png, capture_output=True, timeout=8)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if result.returncode:
-        return None
-    for row in csv.DictReader(io.StringIO(result.stdout.decode('utf-8', 'replace')), delimiter='\t'):
-        word = re.sub(r'[^A-Z]', '', row.get('text', '').upper())
-        if word not in ('SAIR', 'EXIT', 'SALIR'):
-            continue
+    # The spectator screen uses a smaller button than the results screen.
+    for page_mode in ('11', '6'):
         try:
-            x, y = int(row['left']), int(row['top'])
-            w, h = int(row['width']), int(row['height'])
-            confidence = float(row['conf'])
-        except (KeyError, ValueError):
+            result = subprocess.run(['tesseract', 'stdin', 'stdout', 'tsv', '--psm', page_mode],
+                                    input=png, capture_output=True, timeout=8)
+        except (OSError, subprocess.TimeoutExpired):
             continue
-        cx, cy = x + w // 2, y + h // 2
-        if confidence >= 45 and width * .1 < cx < width and height * .4 < cy < height:
-            return cx, cy
+        if result.returncode:
+            continue
+        for row in csv.DictReader(io.StringIO(result.stdout.decode('utf-8', 'replace')), delimiter='\t'):
+            word = re.sub(r'[^A-Z]', '', row.get('text', '').upper())
+            if word not in ('SAIR', 'EXIT', 'SALIR'):
+                continue
+            try:
+                x, y = int(row['left']), int(row['top'])
+                w, h = int(row['width']), int(row['height'])
+                confidence = float(row['conf'])
+            except (KeyError, ValueError):
+                continue
+            cx, cy = x + w // 2, y + h // 2
+            if confidence >= 35 and width * .1 < cx < width and height * .35 < cy < height:
+                return cx, cy
     return None
 
 
@@ -564,8 +566,14 @@ def run_ai(base, token, duration=20, stop_check=None, auto_start=True):
             player_seen = bool(data.get('detections', {}).get('player', 0))
             no_player_seconds = time.monotonic() - no_detection_since
             exit_button = None
-            if (state.startswith('end') or (state == 'match' and not player_seen and
-                    no_player_seconds > 4)) and time.monotonic() - last_exit_scan > 2:
+            # Spectator mode can still show another brawler, so player_seen is
+            # not reliable evidence that our account is alive.
+            scan_interval = 3 if state.startswith('end') or not player_seen else 8
+            if state.startswith('end') or state == 'match':
+                should_scan_exit = time.monotonic() - last_exit_scan > scan_interval
+            else:
+                should_scan_exit = False
+            if should_scan_exit:
                 last_exit_scan = time.monotonic()
                 exit_button = find_exit_button(shot.stdout, data['width'], data['height'])
                 if exit_button:
