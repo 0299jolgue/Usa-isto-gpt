@@ -1,6 +1,7 @@
 # Python 3.12 / Flask / multi-device Brawl Stars control panel
 """Pair Android agents, queue actions per device, and show account snapshots."""
 import hashlib
+import json
 import io
 import os
 from pathlib import Path
@@ -53,6 +54,10 @@ with _db() as _con:
         );
         CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     ''')
+with _db() as _con:
+    _columns = {row['name'] for row in _con.execute('PRAGMA table_info(devices)')}
+    if 'learning_stats' not in _columns:
+        _con.execute("ALTER TABLE devices ADD COLUMN learning_stats TEXT NOT NULL DEFAULT '{}'")
 _DB.chmod(0o600)
 
 
@@ -68,9 +73,10 @@ def _pair_code():
 
 def _devices():
     with _db() as con:
-        rows = con.execute('SELECT id,name,player_tag,trophies,trophies_at,last_seen,screenshot_at '
+        rows = con.execute('SELECT id,name,player_tag,trophies,trophies_at,last_seen,screenshot_at,learning_stats '
                            'FROM devices ORDER BY rowid').fetchall()
-    return [dict(row) | {'online': time.time() - row['last_seen'] < 18} for row in rows]
+    return [dict(row) | {'online': time.time() - row['last_seen'] < 18,
+                         'learning': json.loads(row['learning_stats'] or '{}')} for row in rows]
 
 
 def _device(device_id):
@@ -154,6 +160,11 @@ def _enqueue(action, target, code=None, coords=None):
             _pending[device['id']].append(job_id)
             group['children'].append(job_id)
     return group_id
+
+
+@bridge.get('/overlay')
+def overlay():
+    return render_template('overlay.html', devices=_devices())
 
 
 @bridge.get('/bridge')
@@ -261,6 +272,9 @@ def _submit(action):
     except ValueError as exc:
         flash(str(exc))
         return redirect(url_for('bridge.home'), code=303)
+    if request.form.get('return_to') == 'overlay':
+        flash('Ação enviada ao LDPhone.')
+        return redirect(url_for('bridge.overlay'), code=303)
     return redirect(url_for('bridge.job_page', group_id=group_id), code=303)
 
 
@@ -328,7 +342,8 @@ def stop_farm():
                     if job['status'] == 'queued':
                         job['status'], job['detail'] = 'complete', 'Parado antes de iniciar.'
     flash('Pedido de paragem enviado.')
-    return redirect(url_for('bridge.home'), code=303)
+    return redirect(url_for('bridge.overlay') if request.form.get('return_to') == 'overlay'
+                    else url_for('bridge.home'), code=303)
 
 
 @bridge.get('/bridge/farm-state/<job_id>')
@@ -391,6 +406,25 @@ def result(job_id):
         job['status'] = data['status']
         job['detail'] = str(data.get('detail', ''))[:300]
     _touch(device['id'])
+    return jsonify(ok=True)
+
+
+@bridge.post('/bridge/learning-report')
+def learning_report():
+    device = _agent()
+    if not device:
+        return jsonify(error='unauthorized'), 401
+    data = request.get_json(silent=True) or {}
+    if set(data) != {'aggressive', 'balanced', 'cautious'}:
+        return jsonify(error='invalid tactics'), 400
+    for row in data.values():
+        if not isinstance(row, dict) or set(row) != {'wins', 'losses'} or any(
+                not isinstance(row[key], (int, float)) or not 0 <= row[key] <= 100000
+                for key in ('wins', 'losses')):
+            return jsonify(error='invalid stats'), 400
+    with _db() as con:
+        con.execute('UPDATE devices SET learning_stats=?,last_seen=? WHERE id=?',
+                    (json.dumps(data, separators=(',', ':')), time.time(), device['id']))
     return jsonify(ok=True)
 
 
