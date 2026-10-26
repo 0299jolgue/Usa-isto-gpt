@@ -55,7 +55,7 @@ def decide(png):
     if frame is None:
         raise ValueError('Captura PNG inválida')
     height, width = frame.shape[:2]
-    if not (500 <= width <= 4096 and 300 <= height <= 2160):
+    if not (320 <= width <= 8192 and 180 <= height <= 8192):
         raise ValueError('Dimensões da captura inválidas')
     decoded = time.perf_counter()
     # Match Pyla's top-left letterbox preprocessing, including its gray padding.
