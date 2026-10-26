@@ -161,21 +161,34 @@ def capture_screenshot(base, token, launch_game=True):
     return 'complete', f'Print guardado no painel ({width}x{height}).'
 
 
-def run_ai(base, token, duration=20, stop_check=None):
+def run_ai(base, token, duration=20, stop_check=None, auto_start=True):
     host = urlparse(base).netloc
     connection = http.client.HTTPSConnection(host, timeout=120)
     frames = 0
     actions = 0
     cycles = []
+    no_detection_since = time.monotonic()
     try:
         _ai_post(connection, '/ai/ready', token)
-        start_match()
-        time.sleep(6)
-        deadline = time.monotonic() + duration
-        connection.timeout = 15
-        while time.monotonic() < deadline:
-            if stop_check and stop_check():
-                break
+        if auto_start:
+            start_match()
+            time.sleep(6)
+        else:
+            launch = subprocess.run(['su', '-c', shlex.join([
+                '/system/bin/monkey', '-p', PACKAGE, '-c',
+                'android.intent.category.LAUNCHER', '1',
+            ])], capture_output=True, timeout=15)
+            if launch.returncode:
+                raise RuntimeError('Não foi possível abrir o Brawl Stars')
+            time.sleep(2)
+        deadline = time.monotonic() + duration if duration is not None else None
+        last_stop_check = 0
+        connection.timeout = 20
+        while deadline is None or time.monotonic() < deadline:
+            if stop_check and time.monotonic() - last_stop_check > 2:
+                last_stop_check = time.monotonic()
+                if stop_check():
+                    break
             begin = time.monotonic()
             shot = subprocess.run(['su', '-c', '/system/bin/screencap -p'],
                                   capture_output=True, timeout=5)
@@ -183,15 +196,33 @@ def run_ai(base, token, duration=20, stop_check=None):
                 raise RuntimeError('Captura do ecrã falhou')
             data = _ai_post(connection, '/ai/step', token, shot.stdout, 'image/png')
             action = data['action']
-            if action['kind'] in ('attack', 'move'):
+            if data.get('state') != 'match' or data.get('detections', {}).get('player', 0):
+                no_detection_since = time.monotonic()
+            elif time.monotonic() - no_detection_since > 15:
+                action = {'kind': 'tap', 'x1': round(data['width'] * .865),
+                          'y1': round(data['height'] * .91)}
+                no_detection_since = time.monotonic()
+                print('Sem jogador detetado há 15 s; a tentar avançar o ecrã.', flush=True)
+            if action['kind'] == 'tap':
+                x, y = int(action['x1']), int(action['y1'])
+                width, height = data['width'], data['height']
+                if not (0 <= x < width and 0 <= y < height):
+                    raise RuntimeError('Toque fora do ecrã')
+                gesture = subprocess.run(['su', '-c', f'/system/bin/input tap {x} {y}'],
+                                         capture_output=True, text=True, timeout=5)
+                if gesture.returncode:
+                    raise RuntimeError('Toque falhou: ' + gesture.stderr.strip()[:100])
+                actions += 1
+                time.sleep(2)
+            elif action['kind'] in ('attack', 'move'):
                 width, height = data['width'], data['height']
                 coords = [int(action[key]) for key in ('x1', 'y1', 'x2', 'y2')]
                 if not (0 <= coords[0] < width and 0 <= coords[2] < width and
                         0 <= coords[1] < height and 0 <= coords[3] < height):
                     raise RuntimeError('A IA devolveu coordenadas fora do ecrã')
-                duration = max(80, min(250, int(action['duration_ms'])))
+                gesture_ms = max(80, min(500, int(action['duration_ms'])))
                 command = ['/system/bin/input', 'touchscreen', 'swipe',
-                           *(str(n) for n in coords), str(duration)]
+                           *(str(n) for n in coords), str(gesture_ms)]
                 gesture = subprocess.run(['su', '-c', shlex.join(command)],
                                          capture_output=True, text=True, timeout=5)
                 if gesture.returncode:
@@ -200,11 +231,13 @@ def run_ai(base, token, duration=20, stop_check=None):
             frames += 1
             elapsed = (time.monotonic() - begin) * 1000
             cycles.append(elapsed)
-            print(f'IA frame={frames} ação={action["kind"]} ciclo={elapsed:.0f}ms '
+            print(f'IA frame={frames} estado={data.get("state", "?")} ação={action["kind"]} ciclo={elapsed:.0f}ms '
                   f'servidor={data["timings_ms"]["total"]}ms', flush=True)
     finally:
         connection.close()
     if not cycles:
+        if stop_check:
+            return 'complete', 'Parado antes da primeira imagem.'
         raise RuntimeError('Não foi analisada nenhuma imagem')
     ordered = sorted(cycles)
     median = ordered[len(ordered)//2]
@@ -255,17 +288,11 @@ def tap_screen(base, token, coords):
 
 
 def run_farm(base, token, job_id):
-    games = 0
     def stopped():
         return request_json(base, '/bridge/farm-state/' + job_id, token=token)['stop']
-    while not stopped():
-        # One match at a time; the controller keeps checking the stop request.
-        run_ai(base, token, duration=120, stop_check=stopped)
-        games += 1
-        if stopped():
-            break
-        time.sleep(5)
-    return 'complete', f'Auto farm parado após {games} ciclos.'
+    status, detail = run_ai(base, token, duration=None, stop_check=stopped, auto_start=False)
+    return status, 'Auto farm parado. ' + detail
+
 
 def main():
     if len(sys.argv) not in (2, 3):
