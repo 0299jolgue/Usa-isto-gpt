@@ -41,3 +41,9 @@ O auto farm corre um ciclo contínuo: usa templates de estado do PylaAI fixados 
 
 
 No LDPhone com root, o agente usa os eventos multitouch do Android para manter o joystick pressionado entre imagens e disparar com um segundo dedo. Ao parar, sair do combate ou ocorrer um erro, solta ambos os toques. Se o dispositivo não expuser um ecrã multitouch acessível por root, o agente regista a falha no Termux e usa gestos longos como recurso alternativo.
+
+## Menu flutuante no LDPhone
+
+O projeto `android-overlay/` compila uma app Android externa. O workflow **Build Android overlay** publica o APK `app-debug.apk` no artefacto `brawl-room-menu-apk` da página **Actions** do GitHub. No LDPhone, instala o APK, abre **Brawl Room Menu**, introduz o endereço HTTPS do teu site, concede a permissão **Mostrar sobre outras aplicações** e carrega em **Abrir menu**. Toca na bolha ✳ para expandir, usa **Iniciar auto farm** ou **Parar seleção**, e fecha no ✕. O menu mostra as estatísticas de aprendizagem recebidas do agente.
+
+O agente escolhe entre as táticas `aggressive`, `balanced` e `cautious` por amostragem de resultados. Depois de uma vitória ou derrota observada, guarda os totais no ficheiro privado `~/.brawl_room_tactics.json` do Termux e envia um resumo ao painel. Partidas sem resultado reconhecido não alteram a escolha. Isto adapta a seleção entre três políticas; não treina um novo modelo de visão nem garante melhoria em cada partida.
