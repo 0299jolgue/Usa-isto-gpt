@@ -15,6 +15,9 @@ import sys
 import time
 import csv
 import io
+import fcntl
+import select
+from array import array
 from urllib.parse import urlparse
 
 PACKAGE = 'com.supercell.brawlstars'
@@ -198,12 +201,224 @@ def find_exit_button(png, width, height):
     return None
 
 
+import fcntl
+import select
+from array import array
+
+EV_SYN, EV_KEY, EV_ABS = 0, 1, 3
+SYN_REPORT, BTN_TOUCH = 0, 330
+ABS_MT_SLOT, ABS_MT_TRACKING_ID = 47, 57
+ABS_MT_POSITION_X, ABS_MT_POSITION_Y = 53, 54
+ABS_MT_TOUCH_MAJOR, ABS_MT_PRESSURE = 48, 58
+
+
+def _abs_range(fd, code):
+    # EVIOCGABS(code), returning struct input_absinfo.
+    request = (2 << 30) | (24 << 16) | (ord('E') << 8) | (0x40 + code)
+    data = array('i', [0] * 6)
+    fcntl.ioctl(fd, request, data, True)
+    return data[1], data[2]
+
+
+def _touch_device():
+    candidates = []
+    for path in sorted(Path('/dev/input').glob('event*')):
+        fd = None
+        try:
+            fd = os.open(path, os.O_RDWR)
+            xlo, xhi = _abs_range(fd, ABS_MT_POSITION_X)
+            ylo, yhi = _abs_range(fd, ABS_MT_POSITION_Y)
+            _, slots = _abs_range(fd, ABS_MT_SLOT)
+            if xhi > xlo and yhi > ylo and slots >= 1:
+                candidates.append(((xhi-xlo)*(yhi-ylo), fd, str(path), (xlo,xhi,ylo,yhi)))
+            else:
+                os.close(fd)
+        except (OSError, ValueError):
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+    if not candidates:
+        raise RuntimeError('Nenhum ecrã multitouch encontrado em /dev/input')
+    candidates.sort(reverse=True)
+    _, fd, path, bounds = candidates.pop(0)
+    for _, other_fd, _, _ in candidates:
+        os.close(other_fd)
+    return fd, path, bounds
+
+
+def _screen_rotation():
+    result = subprocess.run(['/system/bin/dumpsys', 'input'], capture_output=True,
+                            text=True, timeout=8)
+    match = re.search(r'SurfaceOrientation:\s*([0-3])', result.stdout)
+    if not match:
+        match = re.search(r'(?:mCurrentOrientation|mRotation|rotation)=([0-3])', result.stdout)
+    return int(match.group(1)) if match else 0
+
+
+def _map_touch(x, y, width, height, bounds, rotation):
+    sx, sy = max(0, min(1, x / width)), max(0, min(1, y / height))
+    if rotation == 1:
+        sx, sy = 1-sy, sx
+    elif rotation == 2:
+        sx, sy = 1-sx, 1-sy
+    elif rotation == 3:
+        sx, sy = sy, 1-sx
+    xlo, xhi, ylo, yhi = bounds
+    return round(xlo + sx*(xhi-xlo)), round(ylo + sy*(yhi-ylo))
+
+
+def _ev(event_type, code, value):
+    return struct.pack('llHHi', 0, 0, event_type, code, value)
+
+
+def touch_helper():
+    fd, path, bounds = _touch_device()
+    rotation = _screen_rotation()
+    fingers = set()
+    tracking = 1
+    print(json.dumps({'ready': True, 'device': path, 'rotation': rotation}), flush=True)
+
+    def emit(events):
+        payload = b''.join(_ev(*event) for event in events)
+        while payload:
+            payload = payload[os.write(fd, payload):]
+
+    def release(slot):
+        if slot not in fingers:
+            return
+        fingers.remove(slot)
+        events = [(EV_ABS, ABS_MT_SLOT, slot), (EV_ABS, ABS_MT_TRACKING_ID, -1)]
+        if not fingers:
+            events.append((EV_KEY, BTN_TOUCH, 0))
+        events.append((EV_SYN, SYN_REPORT, 0))
+        emit(events)
+
+    try:
+        for line in sys.stdin:
+            try:
+                command = json.loads(line)
+                op = command['op']
+                if op == 'reset':
+                    for slot in tuple(fingers):
+                        release(slot)
+                elif op == 'up':
+                    release(int(command['slot']))
+                elif op in ('down', 'move'):
+                    slot = int(command['slot'])
+                    if slot not in (0, 1):
+                        raise ValueError('slot inválido')
+                    tx, ty = _map_touch(float(command['x']), float(command['y']),
+                                        int(command['width']), int(command['height']),
+                                        bounds, rotation)
+                    events = [(EV_ABS, ABS_MT_SLOT, slot)]
+                    if slot not in fingers:
+                        events.append((EV_ABS, ABS_MT_TRACKING_ID, tracking))
+                        tracking += 1
+                        fingers.add(slot)
+                        if len(fingers) == 1:
+                            events.append((EV_KEY, BTN_TOUCH, 1))
+                    events += [(EV_ABS, ABS_MT_POSITION_X, tx),
+                               (EV_ABS, ABS_MT_POSITION_Y, ty),
+                               (EV_SYN, SYN_REPORT, 0)]
+                    emit(events)
+                else:
+                    raise ValueError('operação inválida')
+                print('ok', flush=True)
+            except Exception as exc:
+                print('error:' + str(exc), flush=True)
+    finally:
+        for slot in tuple(fingers):
+            release(slot)
+        os.close(fd)
+
+
+class TouchController:
+    def __init__(self):
+        command = [sys.executable, str(Path(__file__).resolve()), '--touch-helper']
+        self.process = subprocess.Popen(['su', '-c', shlex.join(command)],
+                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE, text=True, bufsize=1)
+        if not select.select([self.process.stdout], [], [], 8)[0]:
+            self.close()
+            raise RuntimeError('O controlador multitouch não iniciou')
+        line = self.process.stdout.readline()
+        try:
+            ready = json.loads(line)
+        except ValueError as exc:
+            self.close()
+            raise RuntimeError('Resposta inválida do multitouch: ' + line[:100]) from exc
+        if not ready.get('ready'):
+            self.close()
+            raise RuntimeError('O controlador multitouch falhou')
+        self.moving = False
+        print('Multitouch:', ready['device'], 'rotação', ready['rotation'], flush=True)
+
+    def send(self, op, slot=None, point=None, size=None):
+        payload = {'op': op}
+        if slot is not None:
+            payload['slot'] = slot
+        if point is not None:
+            payload.update(x=point[0], y=point[1], width=size[0], height=size[1])
+        self.process.stdin.write(json.dumps(payload) + '\n')
+        self.process.stdin.flush()
+        if not select.select([self.process.stdout], [], [], 3)[0]:
+            raise RuntimeError('O multitouch não respondeu')
+        response = self.process.stdout.readline().strip()
+        if response != 'ok':
+            raise RuntimeError('Multitouch: ' + response[:150])
+
+    def move(self, action, width, height):
+        start = (int(action['x1']), int(action['y1']))
+        end = (int(action['x2']), int(action['y2']))
+        if not self.moving:
+            self.send('down', 0, start, (width, height))
+            self.moving = True
+        self.send('move', 0, end, (width, height))
+
+    def release_move(self):
+        if self.moving:
+            self.send('up', 0)
+            self.moving = False
+
+    def attack(self, action, width, height):
+        start = (int(action['x1']), int(action['y1']))
+        end = (int(action['x2']), int(action['y2']))
+        self.send('down', 1, start, (width, height))
+        try:
+            self.send('move', 1, end, (width, height))
+            time.sleep(max(.08, min(.35, int(action['duration_ms'])/1000)))
+        finally:
+            self.send('up', 1)
+
+    def tap(self, x, y, width, height):
+        self.release_move()
+        self.send('down', 1, (x, y), (width, height))
+        time.sleep(.06)
+        self.send('up', 1)
+
+    def close(self):
+        try:
+            if self.process.poll() is None and self.process.stdin:
+                self.process.stdin.write('{"op":"reset"}\n')
+                self.process.stdin.flush()
+                self.process.stdin.close()
+                self.process.wait(timeout=2)
+        except (OSError, subprocess.TimeoutExpired):
+            self.process.terminate()
+        for stream in (self.process.stdout, self.process.stderr):
+            if stream:
+                stream.close()
+
+
 def run_ai(base, token, duration=20, stop_check=None, auto_start=True):
     host = urlparse(base).netloc
     connection = http.client.HTTPSConnection(host, timeout=120)
     frames = 0
     actions = 0
     cycles = []
+    touch = None
     no_detection_since = time.monotonic()
     last_exit_scan = 0
     try:
@@ -219,6 +434,10 @@ def run_ai(base, token, duration=20, stop_check=None, auto_start=True):
             if launch.returncode:
                 raise RuntimeError('Não foi possível abrir o Brawl Stars')
             time.sleep(2)
+        try:
+            touch = TouchController()
+        except (OSError, RuntimeError, ValueError) as exc:
+            print('Multitouch indisponível; a usar gestos longos:', exc, flush=True)
         deadline = time.monotonic() + duration if duration is not None else None
         last_stop_check = 0
         connection.timeout = 20
@@ -250,22 +469,41 @@ def run_ai(base, token, duration=20, stop_check=None, auto_start=True):
                           'y1': round(data['height'] * .91)}
                 no_detection_since = time.monotonic()
                 print('Sem jogador detetado há 15 s; a tentar avançar o ecrã.', flush=True)
-            if data.get('movement') and action['kind'] not in ('tap',) and state == 'match':
-                swipe_action(data['movement'], data['width'], data['height'])
+            movement = data.get('movement') if action['kind'] != 'tap' and state == 'match' else None
+            if movement:
+                if touch:
+                    touch.move(movement, data['width'], data['height'])
+                else:
+                    long_move = dict(movement, duration_ms=1500)
+                    swipe_action(long_move, data['width'], data['height'])
                 actions += 1
+            elif touch:
+                touch.release_move()
             if action['kind'] == 'tap':
                 x, y = int(action['x1']), int(action['y1'])
                 width, height = data['width'], data['height']
                 if not (0 <= x < width and 0 <= y < height):
                     raise RuntimeError('Toque fora do ecrã')
-                gesture = subprocess.run(['su', '-c', f'/system/bin/input tap {x} {y}'],
-                                         capture_output=True, text=True, timeout=5)
-                if gesture.returncode:
-                    raise RuntimeError('Toque falhou: ' + gesture.stderr.strip()[:100])
+                if touch:
+                    touch.tap(x, y, width, height)
+                else:
+                    gesture = subprocess.run(['su', '-c', f'/system/bin/input tap {x} {y}'],
+                                             capture_output=True, text=True, timeout=5)
+                    if gesture.returncode:
+                        raise RuntimeError('Toque falhou: ' + gesture.stderr.strip()[:100])
                 actions += 1
                 time.sleep(2)
-            elif action['kind'] in ('attack', 'move'):
-                swipe_action(action, data['width'], data['height'])
+            elif action['kind'] == 'attack':
+                if touch:
+                    touch.attack(action, data['width'], data['height'])
+                else:
+                    swipe_action(action, data['width'], data['height'])
+                actions += 1
+            elif action['kind'] == 'move' and not movement:
+                if touch:
+                    touch.move(action, data['width'], data['height'])
+                else:
+                    swipe_action(dict(action, duration_ms=1500), data['width'], data['height'])
                 actions += 1
             frames += 1
             elapsed = (time.monotonic() - begin) * 1000
@@ -273,6 +511,8 @@ def run_ai(base, token, duration=20, stop_check=None, auto_start=True):
             print(f'IA frame={frames} estado={state} movimento={bool(data.get("movement"))} ação={action["kind"]} ciclo={elapsed:.0f}ms '
                   f'servidor={data["timings_ms"]["total"]}ms', flush=True)
     finally:
+        if touch:
+            touch.close()
         connection.close()
     if not cycles:
         if stop_check:
@@ -389,4 +629,7 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    if sys.argv[1:] == ['--touch-helper']:
+        touch_helper()
+    else:
+        main()
