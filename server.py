@@ -121,7 +121,13 @@ def ai_step():
         return jsonify(error='expected image/png'), 415
     try:
         from ai_engine import decide
-        return jsonify(decide(request.get_data(cache=False), request.headers.get('X-Strategy', 'balanced')))
+        mode = request.headers.get('X-Mode', '').lower()
+        brawler = request.headers.get('X-Brawler', '').lower()
+        return jsonify(decide(request.get_data(cache=False),
+                              request.headers.get('X-Strategy', 'balanced'),
+                              device_id=device['id'],
+                              mode=mode if mode == 'showdown' else None,
+                              brawler=brawler if brawler == 'shelly' else None))
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
     except Exception as exc:
