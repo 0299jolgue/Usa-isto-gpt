@@ -2,6 +2,6 @@ DISPLAY_NAME=B
 DESCRIPTION=Entrar numa sala Brawl Stars por codigo
 MAIN=main.py
 LANGUAGE=python
-MEMORY=512
+MEMORY=2048
 VERSION=recommended
 SUBDOMAIN=joinbrawl
