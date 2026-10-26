@@ -89,7 +89,22 @@ def open_room(code):
     return 'sent', 'Convite aberto no Android; entrada ainda sem confirmação de rede.'
 
 
-def start_match():
+def read_lobby_loadout(png):
+    if not shutil.which('tesseract'):
+        return {}
+    try:
+        result = subprocess.run(['tesseract', 'stdin', 'stdout', '--psm', '11'],
+                                input=png, capture_output=True, timeout=8)
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    if result.returncode:
+        return {}
+    label = result.stdout.decode('utf-8', 'replace').upper()
+    return {'mode': 'showdown' if re.search(r'COMBATE|SHOWDOWN', label) else None,
+            'brawler': 'shelly' if 'SHELLY' in label else None}
+
+
+def start_match(loadout_callback=None):
     # The official game is the TCP client; the agent only presses its Play button.
     launch = subprocess.run(['su', '-c', shlex.join([
         '/system/bin/monkey', '-p', PACKAGE, '-c',
@@ -111,6 +126,8 @@ def start_match():
         time.sleep(1)
     if width <= height:
         raise RuntimeError(f'O Brawl Stars ainda não apareceu na captura horizontal ({width}x{height})')
+    if loadout_callback:
+        loadout_callback(shot.stdout)
     x, y = round(width * .88), round(height * .88)
     tap = subprocess.run(['su', '-c', f'/system/bin/input tap {x} {y}'],
                          capture_output=True, text=True, timeout=15)
@@ -507,10 +524,20 @@ def run_ai(base, token, duration=20, stop_check=None, auto_start=True):
     learner = TacticsMemory() if duration is None else None
     in_match = False
     awaiting_new_match = False
+    loadout = {'mode': os.environ.get('BRAWL_MODE', '').lower() or None,
+               'brawler': os.environ.get('BRAWL_BRAWLER', '').lower() or None}
+
+    def update_loadout(png):
+        detected = read_lobby_loadout(png)
+        for key, value in detected.items():
+            loadout[key] = os.environ.get('BRAWL_' + key.upper(), '').lower() or value
+        print(f'Modo={loadout["mode"] or "desconhecido"} '
+              f'brawler={loadout["brawler"] or "desconhecido"}', flush=True)
+
     try:
         _ai_post(connection, '/ai/ready', token)
         if auto_start:
-            start_match()
+            start_match(loadout_callback=update_loadout)
             time.sleep(6)
         else:
             launch = subprocess.run(['su', '-c', shlex.join([
@@ -541,7 +568,9 @@ def run_ai(base, token, duration=20, stop_check=None, auto_start=True):
                 if shot.returncode or not shot.stdout.startswith(b'\x89PNG\r\n\x1a\n'):
                     raise RuntimeError('Captura do ecrã falhou')
                 data = _ai_post(connection, '/ai/step', token, shot.stdout, 'image/png',
-                                extra_headers={'X-Strategy': learner.current if learner else 'balanced'})
+                                extra_headers={'X-Strategy': learner.current if learner else 'balanced',
+                                               'X-Mode': loadout['mode'] or '',
+                                               'X-Brawler': loadout['brawler'] or ''})
                 step_errors = 0
             except (OSError, TimeoutError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
                 if 'HTTP 401' in str(exc) or 'HTTP 403' in str(exc):
@@ -563,6 +592,8 @@ def run_ai(base, token, duration=20, stop_check=None, auto_start=True):
                 continue
             action = data['action']
             state = data.get('state', 'match')
+            if state == 'lobby':
+                update_loadout(shot.stdout)
             player_seen = bool(data.get('detections', {}).get('player', 0))
             no_player_seconds = time.monotonic() - no_detection_since
             exit_button = None
@@ -671,7 +702,8 @@ def run_ai(base, token, duration=20, stop_check=None, auto_start=True):
             frames += 1
             elapsed = (time.monotonic() - begin) * 1000
             cycles.append(elapsed)
-            print(f'IA frame={frames} estado={state} movimento={bool(data.get("movement"))} ação={action["kind"]} ciclo={elapsed:.0f}ms '
+            print(f'IA frame={frames} estado={state} tática={data.get("tactic", "-")} vida={data.get("health")} '
+                  f'movimento={bool(data.get("movement"))} ação={action["kind"]} ciclo={elapsed:.0f}ms '
                   f'servidor={data["timings_ms"]["total"]}ms', flush=True)
     finally:
         if touch:
