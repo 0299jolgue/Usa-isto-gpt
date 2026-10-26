@@ -101,7 +101,10 @@ def ai_ready():
     _touch(device['id'])
     try:
         from ai_engine import ready
+        from pyla_state import _source_template, STATES
         ready()
+        for _, path, _, _ in STATES:
+            _source_template(path)
         return jsonify(ok=True)
     except Exception as exc:
         log.exception('ai_ready_failed')
