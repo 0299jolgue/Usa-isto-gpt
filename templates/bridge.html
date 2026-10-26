@@ -1,87 +1,20 @@
 <!doctype html>
-<html lang="pt">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#101424">
-  <title>Brawl Room · Painel</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
-</head>
-<body>
-  <main class="shell">
-    <header class="topbar">
-      <span class="brand"><span class="brand-mark" aria-hidden="true">✳</span> BRAWL ROOM</span>
-      <span class="connection {{ 'online' if online else 'offline' }}" id="connection" aria-live="polite">
-        <span class="connection-dot" aria-hidden="true"></span>
-        <span id="connection-text">LDPhone {{ 'ligado' if online else 'desligado' }}</span>
-      </span>
-    </header>
-
-    <section class="hero">
-      <p class="eyebrow">CONTROLO REMOTO</p>
-      <h1>Entra na sala.<br><span>Joga à distância.</span></h1>
-      <p class="intro">Usa a conta que está aberta no LDPhone. Escolhe uma ação e acompanha o resultado aqui.</p>
-    </section>
-
-    {% if error %}<p class="page-error" role="alert">{{ error }}</p>{% endif %}
-
-    <section class="actions" aria-label="Ações">
-      <article class="card card-primary">
-        <div class="card-heading"><span class="step">01</span><div><h2>Entrar numa sala</h2><p>Escreve o código ou cola o link do convite.</p></div></div>
-        <form method="post" action="{{ url_for('bridge.join') }}" id="join-form">
-          <label for="room-code">Código da sala</label>
-          <input id="room-code" name="code" type="text" placeholder="Ex.: XAKPCRU" autocomplete="off" autocapitalize="characters" spellcheck="false" required>
-          <button class="button button-primary" type="submit">Entrar na sala <span aria-hidden="true">↗</span></button>
-        </form>
-      </article>
-
-      <article class="card card-secondary">
-        <div class="card-heading"><span class="step">02</span><div><h2>Iniciar partida</h2><p>Abre o jogo e toca em Jogar no LDPhone.</p></div></div>
-        <form method="post" action="{{ url_for('bridge.play') }}"><button class="button button-secondary" type="submit">Iniciar partida <span aria-hidden="true">→</span></button></form>
-      </article>
-
-      <article class="card card-secondary">
-        <div class="card-heading"><span class="step">03</span><div><h2>Testar a IA</h2><p>Analisa o ecrã e tenta jogar durante 20 segundos.</p></div></div>
-        <form method="post" action="{{ url_for('bridge.ai') }}"><button class="button button-secondary" type="submit">Testar IA <span aria-hidden="true">→</span></button></form>
-      </article>
-    </section>
-
-    <section class="setup" id="setup" {% if online %}hidden{% endif %}>
-      <div><span class="setup-kicker">CONFIGURAÇÃO</span><h2>Liga o LDPhone</h2><p>Executa no Termux e deixa o agente aberto.</p></div>
-      <div class="command-row"><code id="agent-command">curl -fsSL {{ base }}/agent.py -o /sdcard/Download/ldphone_agent.py &amp;&amp; python /sdcard/Download/ldphone_agent.py {{ base }}</code><button class="copy-button" id="copy-command" type="button">Copiar</button></div>
-    </section>
-
-    <footer>O Brawl Stars instalado no LDPhone faz a ligação ao jogo.</footer>
-  </main>
-  <script>
-    const badge = document.getElementById('connection');
-    const text = document.getElementById('connection-text');
-    const setup = document.getElementById('setup');
-    async function refreshConnection() {
-      try {
-        const response = await fetch('{{ url_for('bridge.online') }}', {cache: 'no-store'});
-        if (!response.ok) return;
-        const online = (await response.json()).online;
-        badge.classList.toggle('online', online);
-        badge.classList.toggle('offline', !online);
-        text.textContent = online ? 'LDPhone ligado' : 'LDPhone desligado';
-        setup.hidden = online;
-      } catch (_) {}
-    }
-    setInterval(refreshConnection, 4000);
-    document.getElementById('join-form').addEventListener('submit', () => {
-      const field = document.getElementById('room-code');
-      if (!field.value.trim().startsWith('http')) field.value = field.value.trim().toUpperCase();
-    });
-    document.getElementById('copy-command').addEventListener('click', async () => {
-      const command = document.getElementById('agent-command').textContent;
-      try {
-        await navigator.clipboard.writeText(command);
-        const button = document.getElementById('copy-command');
-        button.textContent = 'Copiado';
-        setTimeout(() => button.textContent = 'Copiar', 1800);
-      } catch (_) {}
-    });
-  </script>
-</body>
-</html>
+<html lang="pt"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#101424"><title>Controlo · Brawl Room</title><link rel="stylesheet" href="{{ url_for('static',filename='app.css') }}"></head>
+<body><main class="shell">
+  <header class="topbar"><span class="brand"><span class="brand-mark" aria-hidden="true">✳</span> BRAWL ROOM</span><div class="topbar-actions"><span class="connection {{ 'online' if devices|selectattr('online')|list else 'offline' }}" id="connection"><span class="connection-dot" aria-hidden="true"></span><span id="connection-text">{{ devices|selectattr('online')|list|length }} / {{ devices|length }} ligados</span></span><form method="post" action="{{ url_for('logout') }}"><button class="text-button" type="submit">Sair</button></form></div></header>
+  <section class="hero"><p class="eyebrow">CENTRO DE CONTROLO</p><h1>As tuas contas.<br><span>Um só painel.</span></h1><p class="intro">Cada LDPhone usa a conta aberta no seu Brawl Stars. Escolhe um telemóvel ou envia a mesma ação a todos os que estão ligados.</p></section>
+  {% for message in get_flashed_messages() %}<p class="page-error" role="status">{{ message }}</p>{% endfor %}
+  <section class="actions" aria-label="Controlo geral">
+    <article class="card card-primary"><div class="card-heading"><span class="step">01</span><div><h2>Entrar numa sala</h2><p>Usa o código ou link do convite.</p></div></div><form method="post" action="{{ url_for('bridge.join') }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label for="room-code">Código da sala</label><input id="room-code" name="code" placeholder="Ex.: XAKPCRU" autocapitalize="characters" spellcheck="false" required><label for="join-target">Conta</label><select id="join-target" name="target">{% for device in devices %}<option value="{{ device.id }}">{{ device.name }}</option>{% endfor %}<option value="all">Todos os ligados</option></select><button class="button button-primary" type="submit">Entrar na sala <span aria-hidden="true">↗</span></button></form></article>
+    <article class="card card-secondary"><div class="card-heading"><span class="step">02</span><div><h2>Iniciar partida</h2><p>Abre o jogo e toca em Jogar.</p></div></div><form method="post" action="{{ url_for('bridge.play') }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label for="play-target">Conta</label><select id="play-target" name="target">{% for device in devices %}<option value="{{ device.id }}">{{ device.name }}</option>{% endfor %}<option value="all">Todos os ligados</option></select><button class="button button-secondary" type="submit">Iniciar partida <span aria-hidden="true">→</span></button></form></article>
+    <article class="card card-secondary"><div class="card-heading"><span class="step">03</span><div><h2>Testar IA</h2><p>Joga durante 20 segundos.</p></div></div><form method="post" action="{{ url_for('bridge.ai') }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label for="ai-target">Conta</label><select id="ai-target" name="target">{% for device in devices %}<option value="{{ device.id }}">{{ device.name }}</option>{% endfor %}<option value="all">Todos os ligados</option></select><button class="button button-secondary" type="submit">Testar IA <span aria-hidden="true">→</span></button></form></article>
+    <article class="card card-secondary"><div class="card-heading"><span class="step">04</span><div><h2>Ver o ecrã</h2><p>Tira um print dos jogos.</p></div></div><form method="post" action="{{ url_for('bridge.snapshot') }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label for="screen-target">Conta</label><select id="screen-target" name="target">{% for device in devices %}<option value="{{ device.id }}">{{ device.name }}</option>{% endfor %}<option value="all">Todos os ligados</option></select><button class="button button-secondary" type="submit">Tirar print <span aria-hidden="true">→</span></button></form></article>
+  </section>
+  <section class="fleet-section"><div class="section-heading"><div><p class="eyebrow">CONTAS</p><h2>Telemóveis ligados</h2></div><span class="count">{{ devices|length }} registados</span></div>
+    {% if not devices %}<p class="empty-state">Ainda não há telemóveis. Usa o comando abaixo no Termux de cada LDPhone.</p>{% endif %}
+    <div class="device-grid">{% for device in devices %}<article class="device-card"><div class="device-top"><div><h3>{{ device.name }}</h3><p>{{ device.player_tag or 'Tag por definir' }}</p></div><span class="mini-status {{ 'online' if device.online else 'offline' }}">{{ 'Ligado' if device.online else 'Desligado' }}</span></div><div class="trophy-row"><span>🏆 {{ device.trophies if device.trophies is not none else '—' }}</span><form method="post" action="{{ url_for('bridge.refresh_trophies',device_id=device.id) }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="text-button" type="submit">Atualizar troféus</button></form></div>{% if device.screenshot_at %}<a class="screen-preview" href="{{ url_for('bridge.screen_page',device_id=device.id) }}"><img src="{{ url_for('bridge.screen',device_id=device.id) }}?t={{ device.screenshot_at|int }}" alt="Última captura de {{ device.name }}"><span>Ver print ↗</span></a>{% else %}<div class="screen-empty">Ainda sem print do jogo</div>{% endif %}<details><summary>Editar conta</summary><form class="profile-form" method="post" action="{{ url_for('bridge.profile',device_id=device.id) }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Nome<input name="name" value="{{ device.name }}" maxlength="40" required></label><label>Tag do jogador<input name="player_tag" value="{{ device.player_tag }}" placeholder="#..." autocapitalize="characters"></label><button class="button button-secondary" type="submit">Guardar</button></form></details></article>{% endfor %}</div>
+  </section>
+  <section class="setup"><div><span class="setup-kicker">ADICIONAR TELEMÓVEL</span><h2>Liga outro LDPhone</h2><p>Executa este comando no Termux do novo telemóvel. O código de ligação dura 10 minutos.</p></div><div class="command-row"><code id="agent-command">curl -fsSL {{ base }}/agent.py -o /sdcard/Download/ldphone_agent.py &amp;&amp; python /sdcard/Download/ldphone_agent.py {{ base }} {{ pair }}</code><button class="copy-button" id="copy-command" type="button">Copiar</button></div></section>
+  <section class="setup api-setup"><div><span class="setup-kicker">TROFÉUS</span><h2>API do Brawl Stars</h2><p>Para mostrar troféus em cada conta, define a tag acima e guarda uma chave da <a href="https://developer.brawlstars.com/" rel="noreferrer" target="_blank">API oficial</a>. A chave precisa de autorizar o IP da ShardCloud.</p></div><form method="post" action="{{ url_for('bridge.api_key') }}" class="api-form"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label for="api-key">{{ 'Chave configurada — cola outra para substituir' if has_key else 'Chave da API' }}</label><input id="api-key" name="api_key" type="password" autocomplete="off" placeholder="Chave da API"><button class="button button-secondary" type="submit">{{ 'Atualizar chave' if has_key else 'Guardar chave' }}</button></form></section>
+  <footer>As contas continuam ligadas dentro da aplicação Brawl Stars de cada LDPhone.</footer>
+</main><script>const badge=document.getElementById('connection'),txt=document.getElementById('connection-text');setInterval(async()=>{try{const r=await fetch('{{ url_for('bridge.online') }}',{cache:'no-store'});if(!r.ok)return;const d=await r.json();txt.textContent=`${d.online} / ${d.total} ligados`;badge.classList.toggle('online',d.online>0);badge.classList.toggle('offline',d.online===0)}catch(_){}},4000);document.getElementById('copy-command').onclick=async()=>{const b=document.getElementById('copy-command');try{await navigator.clipboard.writeText(document.getElementById('agent-command').textContent);b.textContent='Copiado';setTimeout(()=>b.textContent='Copiar',1800)}catch(_){}};</script></body></html>
