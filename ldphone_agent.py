@@ -338,6 +338,8 @@ def main():
                 print(detail, flush=True)
             time.sleep(2)
         except HttpStatus as exc:
+            if exc.code == 403 and exc.path == '/bridge/register':
+                raise SystemExit('Código de ligação inválido ou expirado. Atualiza o painel no navegador e executa o novo comando.')
             if exc.code in (401, 404, 409):
                 registered = False
             print(exc, flush=True)
