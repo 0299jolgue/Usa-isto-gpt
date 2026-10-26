@@ -31,7 +31,7 @@ def template_security():
 def require_login():
     public = {'health', 'agent_script', 'login', 'static', 'bridge.register',
               'bridge.next_job', 'bridge.result', 'bridge.upload_screenshot',
-              'bridge.farm_state', 'bridge.trophies_report',
+              'bridge.farm_state', 'bridge.trophies_report', 'bridge.learning_report',
               'ai_ready', 'ai_step'}
     if request.endpoint in public:
         return None
@@ -121,7 +121,7 @@ def ai_step():
         return jsonify(error='expected image/png'), 415
     try:
         from ai_engine import decide
-        return jsonify(decide(request.get_data(cache=False)))
+        return jsonify(decide(request.get_data(cache=False), request.headers.get('X-Strategy', 'balanced')))
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
     except Exception as exc:
