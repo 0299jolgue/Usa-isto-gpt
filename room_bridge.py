@@ -225,13 +225,15 @@ def remove_device(device_id):
 def api_key():
     key = request.form.get('api_key', '').strip()
     with _db() as con:
-        if key:
+        if request.form.get('remove') == '1':
+            con.execute('DELETE FROM settings WHERE key=?', ('brawl_api_key',))
+            flash('Chave da API removida.')
+        elif key:
             con.execute('INSERT INTO settings(key,value) VALUES(?,?) '
                         'ON CONFLICT(key) DO UPDATE SET value=excluded.value', ('brawl_api_key', key))
             flash('Chave da API guardada no servidor.')
         else:
-            con.execute('DELETE FROM settings WHERE key=?', ('brawl_api_key',))
-            flash('Chave da API removida.')
+            flash('Cola a chave da API antes de guardar.')
     return redirect(url_for('bridge.home'), code=303)
 
 
