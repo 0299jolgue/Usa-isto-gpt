@@ -90,7 +90,14 @@ def decide(png, strategy='balanced'):
         found[label] = [(float(raw[0, i] * width / resized_w), float(raw[1, i] * height / resized_h),
                          float(confidence[i])) for i in indices]
     player = max(found['player'], key=lambda row: row[2], default=None)
-    enemies = found['enemy']
+    # YOLO often returns several overlapping boxes for one character.
+    enemies = []
+    for row in sorted(found['enemy'], key=lambda item: item[2], reverse=True):
+        if all((row[0]-other[0])**2 + (row[1]-other[1])**2 > (width*.045)**2
+               for other in enemies):
+            enemies.append(row)
+    def clamp_x(value): return max(0, min(width-1, round(value)))
+    def clamp_y(value): return max(0, min(height-1, round(value)))
     tactics = {
         'aggressive': {'range': .12, 'attack_ms': 180},
         'balanced': {'range': .18, 'attack_ms': 130},
@@ -104,7 +111,13 @@ def decide(png, strategy='balanced'):
             dx, dy = target[0]-player[0], target[1]-player[1]
             distance = max(1., math.hypot(dx, dy))
             # Walk into range; strafe around enemies already in range.
-            if distance < width * tactics['range']:
+            nearby = [enemy for enemy in enemies if
+                      math.hypot(enemy[0]-player[0], enemy[1]-player[1]) < width*.25]
+            if len(nearby) >= 2:
+                center_x = sum(enemy[0] for enemy in nearby)/len(nearby)
+                center_y = sum(enemy[1] for enemy in nearby)/len(nearby)
+                move_dx, move_dy = player[0]-center_x, player[1]-center_y
+            elif distance < width * tactics['range']:
                 direction = -1 if int(time.monotonic() / 3) % 2 else 1
                 if strategy == 'cautious' and distance < width * .16:
                     move_dx, move_dy = -dx, -dy
@@ -115,8 +128,8 @@ def decide(png, strategy='balanced'):
             attack_x, attack_y = .897*width, .734*height
             attack_radius = .065*width
             action = {'kind': 'attack', 'x1': round(attack_x), 'y1': round(attack_y),
-                      'x2': round(attack_x + attack_radius*dx/distance),
-                      'y2': round(attack_y + attack_radius*dy/distance),
+                      'x2': clamp_x(attack_x + attack_radius*dx/distance),
+                      'y2': clamp_y(attack_y + attack_radius*dy/distance),
                       'duration_ms': tactics['attack_ms'], 'confidence': round(target[2], 3)}
         else:
             # Patrol when the nearest enemy is outside the camera view.
@@ -129,8 +142,8 @@ def decide(png, strategy='balanced'):
         move_x, move_y = .094*width, .833*height
         move_radius = .065*width
         movement = {'kind': 'move', 'x1': round(move_x), 'y1': round(move_y),
-                    'x2': round(move_x + move_radius*move_dx/move_len),
-                    'y2': round(move_y + move_radius*move_dy/move_len),
+                    'x2': clamp_x(move_x + move_radius*move_dx/move_len),
+                    'y2': clamp_y(move_y + move_radius*move_dy/move_len),
                     'duration_ms': 420, 'confidence': round(player[2], 3)}
     else:
         action = {'kind': 'none'}
