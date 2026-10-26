@@ -5,6 +5,8 @@ on:
       - 'android-overlay/**'
       - '.github/workflows/build-overlay.yml'
   workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   apk:
     runs-on: ubuntu-latest
@@ -22,3 +24,13 @@ jobs:
         with:
           name: brawl-room-menu-apk
           path: android-overlay/app/build/outputs/apk/debug/app-debug.apk
+      - name: Publish installable APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp android-overlay/app/build/outputs/apk/debug/app-debug.apk brawl-room-menu.apk
+          if gh release view overlay-v1 >/dev/null 2>&1; then
+            gh release upload overlay-v1 brawl-room-menu.apk --clobber
+          else
+            gh release create overlay-v1 brawl-room-menu.apk --title "Brawl Room Menu" --notes "Menu flutuante Android para o painel Brawl Room."
+          fi
