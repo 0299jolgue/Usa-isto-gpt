@@ -133,6 +133,13 @@ def _ai_post(connection, path, token, body=b'', content_type='application/octet-
 
 
 def capture_screenshot(base, token):
+    launch = subprocess.run(['su', '-c', shlex.join([
+        '/system/bin/monkey', '-p', PACKAGE, '-c',
+        'android.intent.category.LAUNCHER', '1',
+    ])], capture_output=True, timeout=15)
+    if launch.returncode:
+        raise RuntimeError('Não foi possível abrir o Brawl Stars para o print')
+    time.sleep(1)
     shot = subprocess.run(['su', '-c', '/system/bin/screencap -p'],
                           capture_output=True, timeout=7)
     if shot.returncode:
