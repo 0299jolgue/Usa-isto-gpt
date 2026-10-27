@@ -10,6 +10,8 @@ import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.graphics.drawable.GradientDrawable;
 import android.os.IBinder;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
@@ -21,6 +23,7 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 public final class OverlayService extends Service {
+    private static volatile OverlayService active;
     private WindowManager manager;
     private WindowManager.LayoutParams params;
     private LinearLayout root;
@@ -31,6 +34,7 @@ public final class OverlayService extends Service {
 
     @Override public void onCreate() {
         super.onCreate();
+        active = this;
         NotificationManager notifications = getSystemService(NotificationManager.class);
         notifications.createNotificationChannel(new NotificationChannel("menu", "Menu Brawl Room", NotificationManager.IMPORTANCE_LOW));
         PendingIntent open = PendingIntent.getActivity(this, 0, new Intent(this, MainActivity.class),
@@ -122,7 +126,15 @@ public final class OverlayService extends Service {
         manager.updateViewLayout(root, params);
     }
 
+    static void collapse() {
+        OverlayService service = active;
+        if (service != null) new Handler(Looper.getMainLooper()).post(() -> {
+            if (service.root != null && service.expanded) service.setExpanded(false);
+        });
+    }
+
     @Override public void onDestroy() {
+        active = null;
         if (manager != null && root != null) {
             manager.removeView(root);
             root = null;
