@@ -17,6 +17,7 @@ import time
 import threading
 import csv
 import io
+import xml.etree.ElementTree as ElementTree
 import fcntl
 import select
 from array import array
@@ -132,7 +133,11 @@ def start_match(loadout_callback=None):
     tap = subprocess.run(['su', '-c', f'/system/bin/input tap {x} {y}'],
                          capture_output=True, text=True, timeout=15)
     if tap.returncode:
-        raise RuntimeError((tap.stderr or tap.stdout).strip()[:200])
+        token = accessibility_token()
+        if token:
+            accessibility_gesture(token, None, {'kind': 'tap', 'x1': x, 'y1': y}, width, height)
+        else:
+            raise RuntimeError((tap.stderr or tap.stdout).strip()[:200])
     return 'tapped', f'Toque em Jogar enviado em {x},{y} ({width}x{height}); confirma a partida no jogo.'
 
 
@@ -196,7 +201,61 @@ def swipe_action(action, width, height):
     gesture = subprocess.run(['su', '-c', shlex.join(command)],
                              capture_output=True, text=True, timeout=5)
     if gesture.returncode:
+        if 'SecurityException' in gesture.stderr or 'Injecting to another' in gesture.stderr:
+            raise RuntimeError('Android bloqueou input touchscreen. Instala o APK 1.2 e ativa Brawl Room Menu em Acessibilidade.')
         raise RuntimeError('Gesto falhou: ' + gesture.stderr.strip()[:100])
+
+
+def accessibility_token():
+    path = '/data/user/0/pt.jolgue.brawlroom/shared_prefs/gesture_bridge.xml'
+    try:
+        result = subprocess.run(['su', '-c', shlex.join(['cat', path])],
+                                capture_output=True, text=True, timeout=5)
+        if result.returncode:
+            return None
+        root = ElementTree.fromstring(result.stdout)
+        token = root.find("string[@name='token']")
+        if token is not None and token.text and re.fullmatch(r'[A-Za-z0-9_=-]{20,100}', token.text):
+            return token.text
+    except (OSError, ValueError, ElementTree.ParseError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
+def accessibility_gesture(token, movement, action, width, height):
+    kind = action['kind']
+    if not movement and kind == 'none':
+        return
+    if kind not in ('none', 'tap', 'auto_fire', 'super', 'attack'):
+        raise ValueError('Ação desconhecida para Acessibilidade: ' + kind)
+    values = {
+        'mx1': int(movement['x1']) if movement else 0,
+        'my1': int(movement['y1']) if movement else 0,
+        'mx2': int(movement['x2']) if movement else 0,
+        'my2': int(movement['y2']) if movement else 0,
+        'moving': int(bool(movement)),
+        'ax1': int(action.get('x1', 0)), 'ay1': int(action.get('y1', 0)),
+        'ax2': int(action.get('x2', action.get('x1', 0))),
+        'ay2': int(action.get('y2', action.get('y1', 0))),
+    }
+    for name, value in values.items():
+        limit = height if name.startswith(('my', 'ay')) else width
+        if name != 'moving' and not 0 <= value < limit:
+            raise ValueError('Coordenadas fora do ecrã: ' + name)
+    command = ['/system/bin/am', 'broadcast', '--user', '0', '-n',
+               'pt.jolgue.brawlroom/.GestureReceiver',
+               '-a', 'pt.jolgue.brawlroom.GESTURE',
+               '--es', 'token', token, '--es', 'kind', kind]
+    for name, value in values.items():
+        command += ['--ei', name, str(value)]
+    result = subprocess.run(['su', '-c', shlex.join(command)],
+                            capture_output=True, text=True, timeout=8)
+    output = result.stdout + result.stderr
+    if result.returncode or not re.search(r'Broadcast completed: result=1\b', output):
+        if 'result=2' in output:
+            raise RuntimeError('Ativa Brawl Room Menu nas definições de Acessibilidade do LDPhone.')
+        raise RuntimeError('Acessibilidade não executou o gesto: ' + output.strip()[:160])
+    time.sleep(.98 if movement else .2)
 
 
 def find_exit_button(png, width, height):
@@ -565,6 +624,18 @@ def run_ai(base, token, duration=20, stop_check=None, auto_start=True):
             touch = TouchController()
         except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
             print('Multitouch indisponível; a usar gestos longos:', exc, flush=True)
+        bridge_token = accessibility_token()
+        if bridge_token:
+            try:
+                command = ['/system/bin/am', 'broadcast', '--user', '0', '-n',
+                           'pt.jolgue.brawlroom/.GestureReceiver', '-a',
+                           'pt.jolgue.brawlroom.GESTURE', '--es', 'token', bridge_token,
+                           '--es', 'kind', 'collapse']
+                subprocess.run(['su', '-c', shlex.join(command)],
+                               capture_output=True, timeout=5)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            print('APK de Acessibilidade disponível como controlo de reserva.', flush=True)
         deadline = time.monotonic() + duration if duration is not None else None
         last_stop_check = 0
         connection.timeout = 20
@@ -644,6 +715,20 @@ def run_ai(base, token, duration=20, stop_check=None, auto_start=True):
             if state != 'match' or player_seen or action.get('reason') == 'stuck_screen':
                 no_detection_since = time.monotonic()
             movement = data.get('movement') if action['kind'] != 'tap' and state == 'match' else None
+            reported_action = action['kind']
+            if action['kind'] == 'move' and not movement:
+                movement = action
+                action = {'kind': 'none'}
+            if not touch and not bridge_token:
+                bridge_token = accessibility_token()
+            if not touch and bridge_token:
+                accessibility_gesture(bridge_token, movement, action,
+                                      data['width'], data['height'])
+                actions += int(bool(movement)) + int(action['kind'] != 'none')
+                if action.get('reason') == 'exit_button':
+                    time.sleep(2)
+                movement = None
+                action = {'kind': 'none'}
             if touch and action['kind'] != 'auto_fire':
                 try:
                     touch.release_fire()
@@ -660,8 +745,14 @@ def run_ai(base, token, duration=20, stop_check=None, auto_start=True):
                         touch.close()
                         touch = None
                 if not touch:
-                    long_move = dict(movement, duration_ms=1500)
-                    swipe_action(long_move, data['width'], data['height'])
+                    if bridge_token:
+                        accessibility_gesture(bridge_token, movement, action,
+                                              data['width'], data['height'])
+                        actions += int(action['kind'] != 'none')
+                        action = {'kind': 'none'}
+                    else:
+                        long_move = dict(movement, duration_ms=1500)
+                        swipe_action(long_move, data['width'], data['height'])
                 actions += 1
             elif touch:
                 try:
@@ -675,17 +766,23 @@ def run_ai(base, token, duration=20, stop_check=None, auto_start=True):
                 width, height = data['width'], data['height']
                 if not (0 <= x < width and 0 <= y < height):
                     raise RuntimeError('Toque fora do ecrã')
+                tapped = False
                 if touch:
                     try:
-                        touch.release_move()
+                        touch.tap(x, y, width, height)
+                        tapped = True
                     except (OSError, RuntimeError) as exc:
                         print('Multitouch falhou; toque normal:', exc, flush=True)
                         touch.close()
                         touch = None
-                gesture = subprocess.run(['su', '-c', f'/system/bin/input tap {x} {y}'],
-                                         capture_output=True, text=True, timeout=5)
-                if gesture.returncode:
-                    raise RuntimeError('Toque falhou: ' + gesture.stderr.strip()[:100])
+                if not tapped:
+                    if bridge_token:
+                        accessibility_gesture(bridge_token, None, action, width, height)
+                    else:
+                        gesture = subprocess.run(['su', '-c', f'/system/bin/input tap {x} {y}'],
+                                                 capture_output=True, text=True, timeout=5)
+                        if gesture.returncode:
+                            raise RuntimeError('Toque falhou: ' + gesture.stderr.strip()[:100])
                 actions += 1
                 time.sleep(2.5 if action.get('reason') == 'exit_button' else 1.5)
             elif action['kind'] in ('auto_fire', 'super'):
@@ -701,10 +798,14 @@ def run_ai(base, token, duration=20, stop_check=None, auto_start=True):
                         touch.close()
                         touch = None
                 if not touch:
-                    gesture = subprocess.run(['su', '-c', f'/system/bin/input tap {x} {y}'],
-                                             capture_output=True, text=True, timeout=5)
-                    if gesture.returncode:
-                        raise RuntimeError('Auto fire falhou: ' + gesture.stderr.strip()[:100])
+                    if bridge_token:
+                        accessibility_gesture(bridge_token, None, action,
+                                              data['width'], data['height'])
+                    else:
+                        gesture = subprocess.run(['su', '-c', f'/system/bin/input tap {x} {y}'],
+                                                 capture_output=True, text=True, timeout=5)
+                        if gesture.returncode:
+                            raise RuntimeError('Auto fire falhou: ' + gesture.stderr.strip()[:100])
                 actions += 1
             elif action['kind'] == 'attack':
                 if touch:
@@ -715,20 +816,28 @@ def run_ai(base, token, duration=20, stop_check=None, auto_start=True):
                         touch.close()
                         touch = None
                 if not touch:
-                    swipe_action(action, data['width'], data['height'])
+                    if bridge_token:
+                        accessibility_gesture(bridge_token, None, action,
+                                              data['width'], data['height'])
+                    else:
+                        swipe_action(action, data['width'], data['height'])
                 actions += 1
             elif action['kind'] == 'move' and not movement:
                 if touch:
                     touch.move(action, data['width'], data['height'])
                 else:
-                    swipe_action(dict(action, duration_ms=1500), data['width'], data['height'])
+                    if bridge_token:
+                        accessibility_gesture(bridge_token, action, {'kind': 'none'},
+                                              data['width'], data['height'])
+                    else:
+                        swipe_action(dict(action, duration_ms=1500), data['width'], data['height'])
                 actions += 1
             frames += 1
             elapsed = (time.monotonic() - begin) * 1000
             cycles.append(elapsed)
             print(f'IA frame={frames} estado={state} tática={data.get("tactic", "-")} vida={data.get("health")} '
                   f'inimigos={data.get("detections", {}).get("enemy", 0)} super={data.get("super_ready")} '
-                  f'movimento={bool(data.get("movement"))} ação={action["kind"]} ciclo={elapsed:.0f}ms '
+                  f'movimento={bool(data.get("movement"))} ação={reported_action} ciclo={elapsed:.0f}ms '
                   f'servidor={data["timings_ms"]["total"]}ms', flush=True)
     finally:
         if touch:
