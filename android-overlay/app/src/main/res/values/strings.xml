@@ -1,0 +1,3 @@
+<resources>
+    <string name="accessibility_description">Permite ao agente controlar o jogo quando o Android bloqueia os toques do Termux.</string>
+</resources>
