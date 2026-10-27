@@ -4,7 +4,7 @@ import os
 import secrets
 import time
 from collections import defaultdict, deque
-from flask import Flask, jsonify, redirect, render_template, request, send_file, session, url_for
+from flask import Flask, g, jsonify, redirect, render_template, request, send_file, session, url_for
 from werkzeug.security import check_password_hash
 from room_bridge import _agent, _touch, bridge
 
@@ -29,6 +29,9 @@ def template_security():
 
 @app.before_request
 def require_login():
+    if request.path in ('/', '/login', '/bridge', '/overlay', '/health'):
+        g.started_at = time.monotonic()
+        log.info('page_request_start path=%s', request.path)
     public = {'health', 'agent_script', 'login', 'static', 'bridge.register',
               'bridge.next_job', 'bridge.result', 'bridge.upload_screenshot',
               'bridge.farm_state', 'bridge.trophies_report', 'bridge.learning_report',
@@ -41,6 +44,15 @@ def require_login():
         given = request.form.get('csrf', '')
         if not secrets.compare_digest(given, session.get('csrf', '')):
             return 'Pedido expirado. Atualiza a página e tenta novamente.', 403
+
+
+@app.after_request
+def log_page_response(response):
+    if hasattr(g, 'started_at'):
+        log.info('page_request_end path=%s status=%s duration_ms=%.0f',
+                 request.path, response.status_code,
+                 (time.monotonic() - g.started_at) * 1000)
+    return response
 
 
 @app.route('/login', methods=['GET', 'POST'])
@@ -85,7 +97,8 @@ def index():
 
 @app.get('/health')
 def health():
-    return 'ok', 200, {'Content-Type': 'text/plain; charset=utf-8'}
+    return 'ok', 200, {'Content-Type': 'text/plain; charset=utf-8',
+                       'Cache-Control': 'no-store'}
 
 
 @app.get('/agent.py')
