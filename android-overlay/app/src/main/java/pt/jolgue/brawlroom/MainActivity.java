@@ -7,11 +7,14 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
+import android.util.Base64;
 import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+
+import java.security.SecureRandom;
 
 public final class MainActivity extends Activity {
     private static final String DEFAULT_SITE = "https://joinbrawl.shardweb.app";
@@ -19,6 +22,12 @@ public final class MainActivity extends Activity {
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
+        if (!getSharedPreferences("gesture_bridge", MODE_PRIVATE).contains("token")) {
+            byte[] secret = new byte[24];
+            new SecureRandom().nextBytes(secret);
+            getSharedPreferences("gesture_bridge", MODE_PRIVATE).edit().putString(
+                    "token", Base64.encodeToString(secret, Base64.NO_WRAP | Base64.URL_SAFE)).apply();
+        }
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(32, 48, 32, 32);
@@ -32,6 +41,11 @@ public final class MainActivity extends Activity {
         help.setText("O menu fica por cima do jogo. Toca em ✕ para o fechar.");
         help.setTextColor(Color.LTGRAY);
         root.addView(help);
+        Button accessibility = new Button(this);
+        accessibility.setText("Ativar controlo por Acessibilidade");
+        root.addView(accessibility);
+        accessibility.setOnClickListener(view -> startActivity(
+                new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
         site = new EditText(this);
         site.setSingleLine(true);
         site.setTextColor(Color.WHITE);
