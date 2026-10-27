@@ -23,13 +23,14 @@ if __name__ == '__main__':
         port = int(os.environ.get('PORT', '80'))
         log.info('startup_bind host=0.0.0.0 port=%s', port)
         def selfcheck():
-            try:
-                with urlopen(f'http://127.0.0.1:{port}/health', timeout=3) as response:
-                    log.info('startup_selfcheck status=%s', response.status)
-            except Exception:
-                log.exception('startup_selfcheck_failed')
+            for path in ('/health', '/login'):
+                try:
+                    with urlopen(f'http://127.0.0.1:{port}{path}', timeout=3) as response:
+                        log.info('startup_selfcheck path=%s status=%s', path, response.status)
+                except Exception:
+                    log.exception('startup_selfcheck_failed path=%s', path)
         threading.Timer(2, selfcheck).start()
-        serve(app, host='0.0.0.0', port=port, threads=4)
+        serve(app, host='0.0.0.0', port=port, threads=8)
     except Exception:
         log.exception('startup_serve_failed')
         raise
