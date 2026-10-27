@@ -18,6 +18,7 @@ import threading
 import csv
 import io
 import xml.etree.ElementTree as ElementTree
+import unicodedata
 import fcntl
 import select
 from array import array
@@ -103,6 +104,137 @@ def read_lobby_loadout(png):
     label = result.stdout.decode('utf-8', 'replace').upper()
     return {'mode': 'showdown' if re.search(r'COMBATE|SHOWDOWN', label) else None,
             'brawler': 'shelly' if 'SHELLY' in label else None}
+
+
+def _screen_png():
+    shot = subprocess.run(['su', '-c', '/system/bin/screencap -p'],
+                          capture_output=True, timeout=7)
+    if shot.returncode:
+        raise RuntimeError('Não foi possível capturar o ecrã do jogo')
+    width, height = png_dimensions(shot.stdout)
+    return shot.stdout, width, height
+
+
+def _ocr_words(png):
+    if not shutil.which('tesseract'):
+        raise RuntimeError('Instala tesseract no Termux para verificar o Ranked')
+    result = subprocess.run(['tesseract', 'stdin', 'stdout', 'tsv', '--psm', '11'],
+                            input=png, capture_output=True, timeout=12)
+    if result.returncode:
+        raise RuntimeError('O reconhecimento de texto do jogo falhou')
+    words = []
+    for row in csv.DictReader(io.StringIO(result.stdout.decode('utf-8', 'replace')), delimiter='\t'):
+        try:
+            confidence = float(row['conf'])
+            x, y, w, h = (int(row[key]) for key in ('left', 'top', 'width', 'height'))
+        except (KeyError, ValueError):
+            continue
+        if confidence < 35 or not row.get('text', '').strip():
+            continue
+        label = unicodedata.normalize('NFKD', row['text'].upper())
+        label = re.sub(r'[^A-Z0-9]', '', ''.join(ch for ch in label if not unicodedata.combining(ch)))
+        if label:
+            words.append({'text': label, 'x': x+w//2, 'y': y+h//2, 'confidence': confidence})
+    return words
+
+
+def _rank_word(words):
+    matches = [word for word in words if word['text'] in ('RANQUEADO', 'RANKED')]
+    return max(matches, key=lambda word: word['confidence'], default=None)
+
+
+def _locked_near(words, target, width, height):
+    locked = ('BLOQUEADO', 'BLOQUEADA', 'DESBLOQUEAR', 'LOCKED', 'UNLOCK',
+              'TROFEUS', 'REQUER', 'NECESSARIO')
+    return any(word['text'] in locked and
+               abs(word['x']-target['x']) < width*.22 and
+               abs(word['y']-target['y']) < height*.18 for word in words)
+
+
+def _play_visible(words):
+    return any(word['text'] in ('JOGAR', 'PLAY') for word in words)
+
+
+def _mode_button(words, width, height):
+    labels = {'COMBATE', 'SHOWDOWN', 'FUTEBRAWL', 'BRAWLBALL', 'PIQUEGEMA',
+              'GEMGRAB', 'RANQUEADO', 'RANKED', 'ROUBO', 'HEIST'}
+    choices = [word for word in words if word['text'] in labels and
+               width*.25 < word['x'] < width*.82 and word['y'] > height*.60]
+    return (max(choices, key=lambda word: word['confidence'])['x'],
+            max(choices, key=lambda word: word['confidence'])['y']) if choices else (round(width*.58), round(height*.88))
+
+
+def _tap_game(x, y, width, height):
+    if not 0 <= x < width or not 0 <= y < height:
+        raise ValueError('Toque fora do ecrã')
+    result = subprocess.run(['su', '-c', f'/system/bin/input tap {x} {y}'],
+                            capture_output=True, text=True, timeout=5)
+    if result.returncode:
+        token = accessibility_token()
+        if not token:
+            raise RuntimeError('O Android bloqueou o toque; instala o APK 1.2 e ativa Acessibilidade')
+        accessibility_gesture(token, None, {'kind': 'tap', 'x1': x, 'y1': y}, width, height)
+
+
+def select_ranked():
+    """Select Ranked only when the official client's UI confirms it."""
+    collapse_overlay(accessibility_token())
+    launch = subprocess.run(['su', '-c', shlex.join([
+        '/system/bin/monkey', '-p', PACKAGE, '-c',
+        'android.intent.category.LAUNCHER', '1',
+    ])], capture_output=True, timeout=15)
+    if launch.returncode:
+        raise RuntimeError('Não foi possível abrir o Brawl Stars')
+    deadline = time.monotonic() + 20
+    while True:
+        png, width, height = _screen_png()
+        if width > height:
+            break
+        if time.monotonic() >= deadline:
+            raise RuntimeError('O jogo não abriu em ecrã horizontal')
+        time.sleep(1)
+    time.sleep(1)
+    png, width, height = _screen_png()
+    words = _ocr_words(png)
+    if any(word['text'] in ('SAIR', 'EXIT', 'SALIR') for word in words):
+        return 'unknown', 'Fecha o resultado da partida para verificar Ranked no lobby.'
+    if not _play_visible(words):
+        return 'unknown', 'Abre o lobby do jogo antes de verificar Ranked.'
+    ranked = _rank_word(words)
+    if ranked and _play_visible(words) and ranked['y'] > height*.58:
+        return 'available', 'Ranked já está selecionado; o botão Jogar está visível.'
+    x, y = _mode_button(words, width, height)
+    _tap_game(x, y, width, height)
+    time.sleep(1.5)
+    for attempt in range(3):
+        png, width, height = _screen_png()
+        words = _ocr_words(png)
+        ranked = _rank_word(words)
+        if ranked:
+            break
+        if attempt < 2:
+            swipe = {'x1': round(width*.76), 'y1': round(height*.78),
+                     'x2': round(width*.76), 'y2': round(height*.27),
+                     'duration_ms': 450}
+            token = accessibility_token()
+            if token:
+                accessibility_gesture(token, swipe, {'kind': 'none'}, width, height)
+            else:
+                swipe_action(swipe, width, height)
+            time.sleep(.7)
+    if not ranked:
+        return 'unknown', 'Ranked não apareceu na seleção de modos. Confirma o ecrã do jogo.'
+    if _locked_near(words, ranked, width, height):
+        return 'locked', 'O jogo mostra Ranked bloqueado nesta conta.'
+    _tap_game(ranked['x'], ranked['y'], width, height)
+    time.sleep(1.5)
+    png, width, height = _screen_png()
+    words = _ocr_words(png)
+    if _rank_word(words) and _play_visible(words):
+        return 'available', 'Ranked selecionado e botão Jogar visível.'
+    if any(word['text'] in ('BLOQUEADO', 'LOCKED', 'DESBLOQUEAR', 'UNLOCK') for word in words):
+        return 'locked', 'O jogo pediu para desbloquear Ranked.'
+    return 'unknown', 'Não consegui confirmar se o jogo aceitou Ranked; vê o print no painel.'
 
 
 def start_match(loadout_callback=None):
@@ -256,6 +388,19 @@ def accessibility_gesture(token, movement, action, width, height):
             raise RuntimeError('Ativa Brawl Room Menu nas definições de Acessibilidade do LDPhone.')
         raise RuntimeError('Acessibilidade não executou o gesto: ' + output.strip()[:160])
     time.sleep(.98 if movement else .2)
+
+
+def collapse_overlay(token):
+    if not token:
+        return
+    command = ['/system/bin/am', 'broadcast', '--user', '0', '-n',
+               'pt.jolgue.brawlroom/.GestureReceiver', '-a',
+               'pt.jolgue.brawlroom.GESTURE', '--es', 'token', token,
+               '--es', 'kind', 'collapse']
+    try:
+        subprocess.run(['su', '-c', shlex.join(command)], capture_output=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
 
 
 def find_exit_button(png, width, height):
@@ -584,7 +729,7 @@ class TacticsMemory:
               f'estatísticas={self.stats}', flush=True)
 
 
-def run_ai(base, token, duration=20, stop_check=None, auto_start=True):
+def run_ai(base, token, duration=20, stop_check=None, auto_start=True, ranked=False):
     host = urlparse(base).netloc
     connection = http.client.HTTPSConnection(host, timeout=120)
     frames = 0
@@ -593,6 +738,8 @@ def run_ai(base, token, duration=20, stop_check=None, auto_start=True):
     touch = None
     no_detection_since = time.monotonic()
     last_exit_scan = 0
+    last_draft_scan = 0
+    draft_since = None
     step_errors = 0
     learner = TacticsMemory() if duration is None else None
     in_match = False
@@ -626,15 +773,7 @@ def run_ai(base, token, duration=20, stop_check=None, auto_start=True):
             print('Multitouch indisponível; a usar gestos longos:', exc, flush=True)
         bridge_token = accessibility_token()
         if bridge_token:
-            try:
-                command = ['/system/bin/am', 'broadcast', '--user', '0', '-n',
-                           'pt.jolgue.brawlroom/.GestureReceiver', '-a',
-                           'pt.jolgue.brawlroom.GESTURE', '--es', 'token', bridge_token,
-                           '--es', 'kind', 'collapse']
-                subprocess.run(['su', '-c', shlex.join(command)],
-                               capture_output=True, timeout=5)
-            except (OSError, subprocess.TimeoutExpired):
-                pass
+            collapse_overlay(bridge_token)
             print('APK de Acessibilidade disponível como controlo de reserva.', flush=True)
         deadline = time.monotonic() + duration if duration is not None else None
         last_stop_check = 0
@@ -681,6 +820,21 @@ def run_ai(base, token, duration=20, stop_check=None, auto_start=True):
                 update_loadout(shot.stdout)
             player_seen = bool(data.get('detections', {}).get('player', 0))
             no_player_seconds = time.monotonic() - no_detection_since
+            if ranked and state == 'match' and not player_seen and no_player_seconds > 5 \
+                    and time.monotonic()-last_draft_scan > 6:
+                last_draft_scan = time.monotonic()
+                try:
+                    words = _ocr_words(shot.stdout)
+                    if any(word['text'] in ('BANIR', 'BAN', 'PICK', 'ESCOLHER', 'DRAFT')
+                           for word in words):
+                        draft_since = draft_since or time.monotonic()
+                        print('Ranked em seleção de brawlers; à espera da escolha no LDPhone.', flush=True)
+                except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+                    print('OCR do draft:', exc, flush=True)
+            if player_seen or state != 'match':
+                draft_since = None
+            if draft_since and time.monotonic()-draft_since > 120:
+                raise RuntimeError('Ranked parou na seleção de brawlers. Faz a escolha no LDPhone e inicia novamente.')
             exit_button = None
             # Spectator mode can still show another brawler, so player_seen is
             # not reliable evidence that our account is alive.
@@ -696,6 +850,9 @@ def run_ai(base, token, duration=20, stop_check=None, auto_start=True):
                     print(f'Botão Sair encontrado em {exit_button}.', flush=True)
             action = choose_post_frame_action(action, state, player_seen, no_player_seconds,
                                               exit_button, data['width'], data['height'])
+            if draft_since:
+                action = {'kind': 'none'}
+                data['movement'] = None
             if learner:
                 if state in ('lobby', 'match_making'):
                     awaiting_new_match = False
@@ -895,10 +1052,31 @@ def tap_screen(base, token, coords):
     return 'complete', f'Toque em {x},{y}; novo print disponível.'
 
 
-def run_farm(base, token, job_id):
+def report_ranked(base, token, status, detail):
+    request_json(base, '/bridge/ranked-report', token=token,
+                 payload={'status': status, 'detail': detail})
+
+
+def run_ranked_check(base, token):
+    status, detail = select_ranked()
+    report_ranked(base, token, status, detail)
+    try:
+        capture_screenshot(base, token, launch_game=False)
+    except (OSError, TimeoutError, ValueError, RuntimeError, HttpStatus) as exc:
+        print('Print do Ranked não enviado:', exc, flush=True)
+    return ('complete' if status in ('available', 'locked') else 'failed'), detail
+
+
+def run_farm(base, token, job_id, ranked=False):
+    if ranked:
+        status, detail = select_ranked()
+        report_ranked(base, token, status, detail)
+        if status != 'available':
+            return 'failed', detail
     def stopped():
         return request_json(base, '/bridge/farm-state/' + job_id, token=token)['stop']
-    status, detail = run_ai(base, token, duration=None, stop_check=stopped, auto_start=False)
+    status, detail = run_ai(base, token, duration=None, stop_check=stopped,
+                            auto_start=False, ranked=ranked)
     return status, 'Auto farm parado. ' + detail
 
 
@@ -922,14 +1100,16 @@ def main():
                 registered = True
                 print('Agente ligado:', registration.get('name', 'LDPhone'), flush=True)
             job = request_json(base, '/bridge/next', token=token)
-            if job.get('id') and job.get('action') in ('join', 'play', 'ai', 'snapshot', 'tap', 'farm'):
+            if job.get('id') and job.get('action') in ('join', 'play', 'ai', 'snapshot', 'tap', 'farm', 'ranked_check', 'farm_ranked'):
                 print('A executar:', job['action'], job.get('code') or '', flush=True)
                 try:
                     status, detail = (open_room(job['code']) if job['action'] == 'join'
                                       else run_ai(base, token) if job['action'] == 'ai'
                                       else capture_screenshot(base, token) if job['action'] == 'snapshot'
+                                      else run_ranked_check(base, token) if job['action'] == 'ranked_check'
                                       else tap_screen(base, token, job['coords']) if job['action'] == 'tap'
                                       else run_farm(base, token, job['id']) if job['action'] == 'farm'
+                                      else run_farm(base, token, job['id'], ranked=True) if job['action'] == 'farm_ranked'
                                       else start_match())
                 except Exception as exc:
                     status, detail = 'failed', f'{type(exc).__name__}: {exc}'

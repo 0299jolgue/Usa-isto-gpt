@@ -8,7 +8,7 @@ Importa este repositório para a ShardCloud. `main.py` inicia Flask com Waitress
 
 ## Instalação no LDPhone
 
-Entra no painel, copia o comando de ligação e executa-o no Termux de cada LDPhone. O comando inclui um código de emparelhamento válido por dez minutos. Os agentes antigos precisam de ser atualizados e emparelhados após esta versão.
+Entra no painel, copia o comando de ligação e executa-o no Termux de cada LDPhone. O código de emparelhamento mantém-se estável enquanto a senha do painel não mudar. Atualiza o ficheiro do agente e reinicia-o para receber funções novas.
 
 O painel oferece entrar numa sala, iniciar partida, testar a IA e tirar prints, por telemóvel ou para todos os ligados. Cada dispositivo tem nome, tag do jogador, estado e última captura.
 
@@ -24,7 +24,7 @@ Para mostrar os troféus de cada conta, guarda a tag do jogador no respetivo car
 
 O botão **Testar IA durante 20 segundos** abre o jogo, tenta iniciar uma partida e depois processa capturas do LDPhone no servidor. O modelo ONNX de deteção de jogadores do [PylaAI](https://github.com/PylaAI/PylaAI) é descarregado do commit `284714d` na primeira utilização, verificado por SHA-256 e mantido fora do repositório deste site. O modelo e a lógica de decisão correm na ShardCloud; o agente envia as capturas e executa gestos de joystick no jogo. O teste regista o tempo de cada ciclo no Termux e apresenta mediana e P90 no site.
 
-Esta é uma primeira política de ataque ao inimigo mais próximo e movimento até ao centro quando não encontra inimigos. O jogo tem de estar no ecrã do LDPhone. A meta de 0,5 segundo por ciclo só pode ser validada com os tempos reais do LDPhone e da ShardCloud. O modelo original do PylaAI é distribuído sob CC BY-NC 4.0; o metadata ONNX também declara AGPL-3.0 para Ultralytics.
+Esta política deteta inimigos, alterna a direção de patrulha quando não os vê e escolhe ataques com base no alcance. O jogo tem de estar no ecrã do LDPhone. A meta de 0,5 segundo por ciclo só pode ser validada com os tempos reais do LDPhone e da ShardCloud. O modelo original do PylaAI é distribuído sob CC BY-NC 4.0; o metadata ONNX também declara AGPL-3.0 para Ultralytics.
 
 ## Testes
 
@@ -44,7 +44,11 @@ No LDPhone com root, o agente usa os eventos multitouch do Android para manter o
 
 ## Menu flutuante no LDPhone
 
-O projeto `android-overlay/` compila uma app Android externa. O APK para instalar está na release `overlay-v3`: https://github.com/0299jolgue/Usa-isto-gpt/releases/download/overlay-v3/brawl-room-menu.apk. O workflow **Build Android overlay** também guarda o APK no artefacto `brawl-room-menu-apk` da página **Actions** do GitHub. No LDPhone, instala o APK e abre **Brawl Room Menu**: `https://joinbrawl.shardweb.app` já vem preenchido. Concede a permissão **Mostrar sobre outras aplicações**, toca em **Ativar controlo por Acessibilidade** e ativa **Brawl Room Menu** nas definições. Depois carrega em **Abrir menu**. O agente recolhe automaticamente o menu quando começa a jogar. Se o Android bloquear `input touchscreen`, o agente usa o serviço de Acessibilidade para mover e atacar. Se o Android recusar a instalação sobre o APK antigo por assinatura incompatível, desinstala o antigo e instala esta versão.
+O projeto `android-overlay/` compila uma app Android externa. O APK para instalar está na release `overlay-v4`: https://github.com/0299jolgue/Usa-isto-gpt/releases/download/overlay-v4/brawl-room-menu.apk. O workflow **Build Android overlay** também guarda o APK no artefacto `brawl-room-menu-apk` da página **Actions** do GitHub. No LDPhone, instala o APK e abre **Brawl Room Menu**: `https://joinbrawl.shardweb.app` já vem preenchido. Concede a permissão **Mostrar sobre outras aplicações**, toca em **Ativar controlo por Acessibilidade** e ativa **Brawl Room Menu** nas definições. Depois carrega em **Abrir menu**. O HUD compacto mostra estado de cada conta, permite verificar Ranked e controlar os dois modos de farm; recolhe quando se inicia uma partida. Se o Android bloquear `input touchscreen`, o agente usa o serviço de Acessibilidade para mover e atacar. Se o Android recusar a instalação sobre o APK antigo por assinatura incompatível, desinstala o antigo e instala esta versão.
+
+## Ranked
+
+**Verificar Ranked** abre a seleção de modos no LDPhone, procura a opção por OCR e só marca a conta como disponível quando o jogo mostra Ranked selecionado com o botão Jogar. Uma opção bloqueada é reportada como bloqueada; um ecrã que não permita confirmação fica como desconhecido. **Jogar Ranked** repete a verificação antes de iniciar o ciclo de jogo. A disponibilidade fica guardada no painel por conta. A seleção e banimento de brawlers em drafts de patamares mais altos exigem intervenção no LDPhone; o agente espera até 120 segundos e pára com uma mensagem clara se o draft não for concluído. Ainda não houve validação de Ranked no LDPhone real.
 
 O agente escolhe entre as táticas `aggressive`, `balanced` e `cautious` por amostragem de resultados. Depois de uma vitória ou derrota observada, guarda os totais no ficheiro privado `~/.brawl_room_tactics.json` do Termux e envia um resumo ao painel. Partidas sem resultado reconhecido não alteram a escolha. Isto adapta a seleção entre três políticas; não treina um novo modelo de visão nem garante melhoria em cada partida.
 

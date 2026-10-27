@@ -58,6 +58,12 @@ with _db() as _con:
     _columns = {row['name'] for row in _con.execute('PRAGMA table_info(devices)')}
     if 'learning_stats' not in _columns:
         _con.execute("ALTER TABLE devices ADD COLUMN learning_stats TEXT NOT NULL DEFAULT '{}'")
+    if 'ranked_status' not in _columns:
+        _con.execute("ALTER TABLE devices ADD COLUMN ranked_status TEXT NOT NULL DEFAULT 'unknown'")
+    if 'ranked_detail' not in _columns:
+        _con.execute("ALTER TABLE devices ADD COLUMN ranked_detail TEXT NOT NULL DEFAULT ''")
+    if 'ranked_checked_at' not in _columns:
+        _con.execute('ALTER TABLE devices ADD COLUMN ranked_checked_at REAL')
 _DB.chmod(0o600)
 
 
@@ -73,10 +79,14 @@ def _pair_code():
 
 def _devices():
     with _db() as con:
-        rows = con.execute('SELECT id,name,player_tag,trophies,trophies_at,last_seen,screenshot_at,learning_stats '
+        rows = con.execute('SELECT id,name,player_tag,trophies,trophies_at,last_seen,screenshot_at,learning_stats,ranked_status,ranked_detail,ranked_checked_at '
                            'FROM devices ORDER BY rowid').fetchall()
+    with _lock:
+        active = {job['device_id']: job['action'] for job in _jobs.values()
+                  if job['status'] in ('queued', 'running') and job['action'] in ('farm', 'farm_ranked')}
     return [dict(row) | {'online': time.time() - row['last_seen'] < 18,
-                         'learning': json.loads(row['learning_stats'] or '{}')} for row in rows]
+                         'learning': json.loads(row['learning_stats'] or '{}'),
+                         'active_mode': active.get(row['id'])} for row in rows]
 
 
 def _device(device_id):
@@ -117,7 +127,9 @@ def _job_label(job):
     state = job['status']
     if state == 'running':
         return {'join': 'A abrir o convite', 'play': 'A tocar em Jogar',
-                'ai': 'A analisar imagens', 'snapshot': 'A tirar print', 'tap': 'A tocar no ecrã', 'farm': 'Auto farm ativo'}[job['action']]
+                'ai': 'A analisar imagens', 'snapshot': 'A tirar print', 'tap': 'A tocar no ecrã',
+                'farm': 'Auto farm ativo', 'ranked_check': 'A verificar Ranked',
+                'farm_ranked': 'Ranked ativo'}[job['action']]
     if state == 'queued' and time.time() - _device(job['device_id'])['last_seen'] > 18:
         return 'LDPhone desligado'
     return {'queued': 'À espera do LDPhone', 'sent': 'Convite aberto',
@@ -146,8 +158,12 @@ def _enqueue(action, target, code=None, coords=None):
     if not selected:
         raise ValueError('Não há telemóveis disponíveis para esta ação.')
     with _lock:
-        if action == 'farm' and any(job['action'] == 'farm' and job['device_id'] in {device['id'] for device in selected} and job['status'] in ('queued', 'running') for job in _jobs.values()):
-            raise ValueError('O auto farm já está ativo numa destas contas.')
+        selected_ids = {device['id'] for device in selected}
+        farm_active = any(job['action'] in ('farm', 'farm_ranked') and
+                          job['device_id'] in selected_ids and
+                          job['status'] in ('queued', 'running') for job in _jobs.values())
+        if farm_active and action in ('farm', 'farm_ranked', 'ranked_check'):
+            raise ValueError('Pára o auto farm nessa conta antes de verificar ou jogar Ranked.')
         if any(len(_pending[device['id']]) >= 4 for device in selected):
             raise ValueError('Há demasiadas ações em espera para um telemóvel.')
         group_id = secrets.token_urlsafe(12)
@@ -178,7 +194,11 @@ def home():
 @bridge.get('/bridge/online')
 def online():
     devices = _devices()
-    return jsonify(online=sum(device['online'] for device in devices), total=len(devices))
+    return jsonify(online=sum(device['online'] for device in devices), total=len(devices),
+                   devices=[{'id': device['id'], 'name': device['name'], 'online': device['online'],
+                             'ranked_status': device['ranked_status'],
+                             'ranked_detail': device['ranked_detail'],
+                             'active_mode': device['active_mode']} for device in devices])
 
 
 @bridge.post('/bridge/register')
@@ -298,6 +318,11 @@ def snapshot():
     return _submit('snapshot')
 
 
+@bridge.post('/bridge/ranked/check')
+def ranked_check():
+    return _submit('ranked_check')
+
+
 @bridge.get('/bridge/job/<group_id>')
 def job_page(group_id):
     with _lock:
@@ -305,7 +330,9 @@ def job_page(group_id):
         if not group:
             return 'Ação desconhecida', 404
         title = {'join': 'Entrar na sala', 'play': 'Iniciar partida',
-                 'ai': 'Teste de IA', 'snapshot': 'Capturar ecrã', 'tap': 'Tocar no ecrã', 'farm': 'Auto farm'}[group['action']]
+                 'ai': 'Teste de IA', 'snapshot': 'Capturar ecrã', 'tap': 'Tocar no ecrã',
+                 'farm': 'Auto farm', 'ranked_check': 'Verificar Ranked',
+                 'farm_ranked': 'Jogar Ranked'}[group['action']]
         if group['code']:
             title += ' ' + group['code']
         result = _group_status(group)
@@ -331,12 +358,17 @@ def farm():
     return _submit('farm')
 
 
+@bridge.post('/bridge/farm-ranked')
+def farm_ranked():
+    return _submit('farm_ranked')
+
+
 @bridge.post('/bridge/farm/stop')
 def stop_farm():
     target = request.form.get('target', '')
     with _lock:
         for job in _jobs.values():
-            if job['action'] == 'farm' and (target == 'all' or job['device_id'] == target):
+            if job['action'] in ('farm', 'farm_ranked') and (target == 'all' or job['device_id'] == target):
                 if job['status'] in ('queued', 'running'):
                     job['stop'] = True
                     if job['status'] == 'queued':
@@ -353,7 +385,7 @@ def farm_state(job_id):
         return jsonify(error='unauthorized'), 401
     with _lock:
         job = _jobs.get(job_id)
-        if not job or job['device_id'] != device['id'] or job['action'] != 'farm':
+        if not job or job['device_id'] != device['id'] or job['action'] not in ('farm', 'farm_ranked'):
             return jsonify(error='unknown action'), 404
         stop = bool(job.get('stop'))
     _touch(device['id'])
@@ -425,6 +457,23 @@ def learning_report():
     with _db() as con:
         con.execute('UPDATE devices SET learning_stats=?,last_seen=? WHERE id=?',
                     (json.dumps(data, separators=(',', ':')), time.time(), device['id']))
+    return jsonify(ok=True)
+
+
+@bridge.post('/bridge/ranked-report')
+def ranked_report():
+    device = _agent()
+    if not device:
+        return jsonify(error='unauthorized'), 401
+    data = request.get_json(silent=True) or {}
+    status = data.get('status')
+    if status not in ('available', 'locked', 'unknown'):
+        return jsonify(error='invalid ranked status'), 400
+    detail = str(data.get('detail', ''))[:200]
+    with _db() as con:
+        con.execute('UPDATE devices SET ranked_status=?,ranked_detail=?,ranked_checked_at=? WHERE id=?',
+                    (status, detail, time.time(), device['id']))
+    _touch(device['id'])
     return jsonify(ok=True)
 
 

@@ -17,12 +17,16 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.webkit.CookieManager;
+import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
 public final class OverlayService extends Service {
+    public final class MenuBridge {
+        @JavascriptInterface public void collapse() { OverlayService.collapse(); }
+    }
     private static volatile OverlayService active;
     private WindowManager manager;
     private WindowManager.LayoutParams params;
@@ -72,7 +76,7 @@ public final class OverlayService extends Service {
                 PixelFormat.TRANSLUCENT);
         params.gravity = Gravity.TOP | Gravity.START;
         params.x = dp(18);
-        params.y = dp(160);
+        params.y = dp(24);
         root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         GradientDrawable background = new GradientDrawable();
@@ -108,6 +112,7 @@ public final class OverlayService extends Service {
         browser = new WebView(this);
         browser.getSettings().setJavaScriptEnabled(true);
         browser.getSettings().setDomStorageEnabled(true);
+        browser.addJavascriptInterface(new MenuBridge(), "BrawlRoom");
         CookieManager.getInstance().setAcceptCookie(true);
         browser.setWebViewClient(new WebViewClient());
         browser.loadUrl(site + "/overlay");
@@ -119,8 +124,8 @@ public final class OverlayService extends Service {
     private void setExpanded(boolean value) {
         expanded = value;
         browser.setVisibility(value ? View.VISIBLE : View.GONE);
-        params.width = value ? dp(340) : dp(56);
-        params.height = value ? dp(480) : dp(56);
+        params.width = value ? dp(300) : dp(56);
+        params.height = value ? dp(360) : dp(56);
         params.flags = WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL |
                 (value ? 0 : WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE);
         manager.updateViewLayout(root, params);
