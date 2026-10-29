@@ -40,6 +40,8 @@ def require_login():
     if request.endpoint in public:
         return None
     if not session.get('logged_in'):
+        if request.endpoint == 'bridge.overlay' and request.method == 'GET':
+            return render_template('login.html', error=None, next_path='/overlay')
         return redirect(url_for('login', next=request.path))
     if request.method == 'POST' and request.endpoint != 'logout':
         given = request.form.get('csrf', '')
@@ -59,14 +61,15 @@ def log_page_response(response):
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'GET':
-        return render_template('login.html', error=None)
+        return render_template('login.html', error=None, next_path=request.args.get('next', ''))
     ip = request.headers.get('CF-Connecting-IP', request.remote_addr or 'unknown')
     attempts = _login_attempts[ip]
     now = time.monotonic()
     while attempts and now - attempts[0] > 300:
         attempts.popleft()
     if len(attempts) >= 8:
-        return render_template('login.html', error='Muitas tentativas. Aguarda alguns minutos.'), 429
+        return render_template('login.html', error='Muitas tentativas. Aguarda alguns minutos.',
+                               next_path=request.args.get('next', '')), 429
     username = request.form.get('username', '')
     password = request.form.get('password', '')
     expected_user = os.environ.get('PANEL_USERNAME', 'jolgue')
@@ -75,12 +78,17 @@ def login():
                       else check_password_hash(_PASSWORD_HASH, password))
     if not secrets.compare_digest(username, expected_user) or not valid_password:
         attempts.append(now)
-        return render_template('login.html', error='Login ou senha incorretos.'), 401
+        return render_template('login.html', error='Login ou senha incorretos.',
+                               next_path=request.args.get('next', '')), 401
     attempts.clear()
     session.clear()
     session['logged_in'] = True
     session['csrf'] = secrets.token_urlsafe(24)
     destination = request.args.get('next', '')
+    if destination == '/overlay':
+        from room_bridge import _devices, _recent_activity, _pair_code
+        return render_template('overlay.html', devices=_devices(), activity=_recent_activity(1),
+                               pair=_pair_code(), base='https://' + request.host.split(':', 1)[0])
     return redirect(destination if destination.startswith('/') and not destination.startswith('//')
                     else url_for('bridge.home'), code=303)
 

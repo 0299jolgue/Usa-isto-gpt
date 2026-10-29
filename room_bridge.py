@@ -340,10 +340,10 @@ def _submit(action):
         group_id = _enqueue(action, request.form.get('target', ''), code)
     except ValueError as exc:
         flash(str(exc))
-        return redirect(url_for('bridge.home'), code=303)
+        return overlay() if request.form.get('return_to') == 'overlay' else redirect(url_for('bridge.home'), code=303)
     if request.form.get('return_to') == 'overlay':
         flash('Ação enviada ao LDPhone.')
-        return redirect(url_for('bridge.overlay'), code=303)
+        return overlay()
     return redirect(url_for('bridge.job_page', group_id=group_id), code=303)
 
 
@@ -425,8 +425,7 @@ def stop_farm():
                     _record_event(job['device_id'], job['name'], job['action'],
                                   'stopping', 'Paragem pedida no painel.')
     flash('Pedido de paragem enviado.')
-    return redirect(url_for('bridge.overlay') if request.form.get('return_to') == 'overlay'
-                    else url_for('bridge.home'), code=303)
+    return overlay() if request.form.get('return_to') == 'overlay' else redirect(url_for('bridge.home'), code=303)
 
 
 @bridge.post('/bridge/queue/cancel')

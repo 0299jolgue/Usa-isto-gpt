@@ -25,6 +25,9 @@ import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
+import android.webkit.WebSettings;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
@@ -43,7 +46,10 @@ public final class OverlayService extends Service {
     private WindowManager.LayoutParams params;
     private LinearLayout root;
     private WebView browser;
+    private TextView statusLabel;
     private String siteAddress;
+    private int retries = 0;
+    private boolean pageFailed = false;
     private boolean expanded = false;
     private float dragX, dragY;
     private int originX, originY;
@@ -66,7 +72,10 @@ public final class OverlayService extends Service {
         if (site == null || !site.startsWith("https://")) return START_NOT_STICKY;
         siteAddress = site;
         if (root == null) makeWindow(site);
-        else browser.loadUrl(site + "/overlay");
+        else {
+            retries = 0;
+            loadMenu();
+        }
         return START_STICKY;
     }
 
@@ -90,6 +99,25 @@ public final class OverlayService extends Service {
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         startActivity(intent);
         collapse();
+    }
+
+    private void loadMenu() {
+        if (browser != null && siteAddress != null) {
+            browser.loadUrl(siteAddress + "/overlay?refresh=" + System.currentTimeMillis());
+        }
+    }
+
+    private void retryMenu(int errorCode) {
+        if (pageFailed) return;
+        pageFailed = true;
+        statusLabel.setText("ERRO " + errorCode + " · ⟳");
+        if (retries >= 3) return;
+        long delay = 1200L << retries;
+        retries++;
+        final int attempt = retries;
+        new Handler(Looper.getMainLooper()).postDelayed(() -> {
+            if (browser != null && retries == attempt) loadMenu();
+        }, delay);
     }
 
     private TextView text(String content, int size) {
@@ -122,12 +150,16 @@ public final class OverlayService extends Service {
         TextView toggle = text("✳", 26);
         bar.addView(toggle, new LinearLayout.LayoutParams(dp(56), dp(52)));
         toggle.setOnClickListener(view -> setExpanded(!expanded));
-        TextView label = text("BRAWL ROOM", 12);
-        bar.addView(label, new LinearLayout.LayoutParams(0, dp(52), 1));
+        statusLabel = text("BRAWL ROOM", 12);
+        bar.addView(statusLabel, new LinearLayout.LayoutParams(0, dp(52), 1));
         TextView refresh = text("⟳", 23);
         bar.addView(refresh, new LinearLayout.LayoutParams(dp(38), dp(52)));
         refresh.setContentDescription("Atualizar menu");
-        refresh.setOnClickListener(view -> browser.reload());
+        refresh.setOnClickListener(view -> {
+            retries = 0;
+            browser.clearCache(true);
+            loadMenu();
+        });
         TextView minimise = text("—", 23);
         bar.addView(minimise, new LinearLayout.LayoutParams(dp(38), dp(52)));
         minimise.setContentDescription("Recolher menu");
@@ -156,10 +188,31 @@ public final class OverlayService extends Service {
         browser.getSettings().setJavaScriptEnabled(true);
         browser.getSettings().setDomStorageEnabled(true);
         browser.getSettings().setAllowFileAccess(false);
+        browser.getSettings().setCacheMode(WebSettings.LOAD_NO_CACHE);
         browser.addJavascriptInterface(new MenuBridge(), "BrawlRoom");
         CookieManager.getInstance().setAcceptCookie(true);
-        browser.setWebViewClient(new WebViewClient());
-        browser.loadUrl(site + "/overlay");
+        browser.setWebViewClient(new WebViewClient() {
+            @Override public void onPageStarted(WebView view, String url, android.graphics.Bitmap icon) {
+                pageFailed = false;
+                statusLabel.setText("A LIGAR...");
+            }
+            @Override public void onReceivedHttpError(WebView view, WebResourceRequest request,
+                                                       WebResourceResponse response) {
+                if (request.isForMainFrame() && response.getStatusCode() >= 500)
+                    retryMenu(response.getStatusCode());
+            }
+            @Override public void onReceivedError(WebView view, WebResourceRequest request,
+                                                   android.webkit.WebResourceError error) {
+                if (request.isForMainFrame()) retryMenu(error.getErrorCode());
+            }
+            @Override public void onPageFinished(WebView view, String url) {
+                if (!pageFailed) {
+                    retries = 0;
+                    statusLabel.setText("BRAWL ROOM");
+                }
+            }
+        });
+        loadMenu();
         browser.setVisibility(View.GONE);
         root.addView(browser, new LinearLayout.LayoutParams(-1, 0, 1));
         manager.addView(root, params);
