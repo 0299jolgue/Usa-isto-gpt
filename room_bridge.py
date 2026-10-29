@@ -216,7 +216,8 @@ def _enqueue(action, target, code=None, coords=None):
 
 @bridge.get('/overlay')
 def overlay():
-    return render_template('overlay.html', devices=_devices())
+    return render_template('overlay.html', devices=_devices(), activity=_recent_activity(1), pair=_pair_code(),
+                           base='https://' + request.host.split(':', 1)[0])
 
 
 @bridge.get('/bridge')

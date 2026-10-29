@@ -5,13 +5,18 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Intent;
+import android.content.res.Configuration;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.graphics.drawable.GradientDrawable;
 import android.os.IBinder;
 import android.os.Handler;
 import android.os.Looper;
+import android.net.Uri;
+import android.util.DisplayMetrics;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
@@ -26,12 +31,19 @@ import android.widget.TextView;
 public final class OverlayService extends Service {
     public final class MenuBridge {
         @JavascriptInterface public void collapse() { OverlayService.collapse(); }
+        @JavascriptInterface public void openDashboard() { OverlayService.this.openDashboard(); }
+        @JavascriptInterface public void copyText(String value) {
+            if (value == null || value.length() > 4096) return;
+            ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+            clipboard.setPrimaryClip(ClipData.newPlainText("Comando Termux", value));
+        }
     }
     private static volatile OverlayService active;
     private WindowManager manager;
     private WindowManager.LayoutParams params;
     private LinearLayout root;
     private WebView browser;
+    private String siteAddress;
     private boolean expanded = false;
     private float dragX, dragY;
     private int originX, originY;
@@ -52,12 +64,33 @@ public final class OverlayService extends Service {
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         String site = intent != null ? intent.getStringExtra("site") : null;
         if (site == null || !site.startsWith("https://")) return START_NOT_STICKY;
+        siteAddress = site;
         if (root == null) makeWindow(site);
         else browser.loadUrl(site + "/overlay");
         return START_STICKY;
     }
 
     private int dp(int value) { return Math.round(getResources().getDisplayMetrics().density * value); }
+
+    private int[] screenSize() {
+        DisplayMetrics metrics = new DisplayMetrics();
+        manager.getDefaultDisplay().getRealMetrics(metrics);
+        return new int[]{metrics.widthPixels, metrics.heightPixels};
+    }
+
+    private void clampPosition() {
+        int[] size = screenSize();
+        params.x = Math.max(0, Math.min(params.x, size[0] - params.width));
+        params.y = Math.max(0, Math.min(params.y, size[1] - params.height));
+    }
+
+    private void openDashboard() {
+        if (siteAddress == null) return;
+        Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(siteAddress + "/bridge"));
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        startActivity(intent);
+        collapse();
+    }
 
     private TextView text(String content, int size) {
         TextView view = new TextView(this);
@@ -86,13 +119,22 @@ public final class OverlayService extends Service {
         root.setBackground(background);
         LinearLayout bar = new LinearLayout(this);
         bar.setGravity(Gravity.CENTER_VERTICAL);
-        TextView toggle = text("✳", 28);
-        bar.addView(toggle, new LinearLayout.LayoutParams(dp(56), dp(56)));
+        TextView toggle = text("✳", 26);
+        bar.addView(toggle, new LinearLayout.LayoutParams(dp(56), dp(52)));
         toggle.setOnClickListener(view -> setExpanded(!expanded));
-        TextView label = text("BRAWL ROOM", 14);
-        bar.addView(label, new LinearLayout.LayoutParams(0, dp(56), 1));
-        TextView close = text("✕", 22);
-        bar.addView(close, new LinearLayout.LayoutParams(dp(48), dp(56)));
+        TextView label = text("BRAWL ROOM", 12);
+        bar.addView(label, new LinearLayout.LayoutParams(0, dp(52), 1));
+        TextView refresh = text("⟳", 23);
+        bar.addView(refresh, new LinearLayout.LayoutParams(dp(38), dp(52)));
+        refresh.setContentDescription("Atualizar menu");
+        refresh.setOnClickListener(view -> browser.reload());
+        TextView minimise = text("—", 23);
+        bar.addView(minimise, new LinearLayout.LayoutParams(dp(38), dp(52)));
+        minimise.setContentDescription("Recolher menu");
+        minimise.setOnClickListener(view -> setExpanded(false));
+        TextView close = text("✕", 20);
+        bar.addView(close, new LinearLayout.LayoutParams(dp(38), dp(52)));
+        close.setContentDescription("Fechar menu");
         close.setOnClickListener(view -> stopSelf());
         bar.setOnTouchListener((view, event) -> {
             if (event.getAction() == MotionEvent.ACTION_DOWN) {
@@ -103,6 +145,7 @@ public final class OverlayService extends Service {
             if (event.getAction() == MotionEvent.ACTION_MOVE) {
                 params.x = originX + Math.round(event.getRawX() - dragX);
                 params.y = originY + Math.round(event.getRawY() - dragY);
+                clampPosition();
                 manager.updateViewLayout(root, params);
                 return true;
             }
@@ -112,6 +155,7 @@ public final class OverlayService extends Service {
         browser = new WebView(this);
         browser.getSettings().setJavaScriptEnabled(true);
         browser.getSettings().setDomStorageEnabled(true);
+        browser.getSettings().setAllowFileAccess(false);
         browser.addJavascriptInterface(new MenuBridge(), "BrawlRoom");
         CookieManager.getInstance().setAcceptCookie(true);
         browser.setWebViewClient(new WebViewClient());
@@ -124,11 +168,18 @@ public final class OverlayService extends Service {
     private void setExpanded(boolean value) {
         expanded = value;
         browser.setVisibility(value ? View.VISIBLE : View.GONE);
-        params.width = value ? dp(300) : dp(56);
-        params.height = value ? dp(360) : dp(56);
+        int[] size = screenSize();
+        params.width = value ? Math.min(dp(320), Math.max(dp(56), size[0] - dp(24))) : dp(56);
+        params.height = value ? Math.min(dp(430), Math.max(dp(56), size[1] - dp(48))) : dp(56);
         params.flags = WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL |
                 (value ? 0 : WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE);
+        clampPosition();
         manager.updateViewLayout(root, params);
+    }
+
+    @Override public void onConfigurationChanged(Configuration configuration) {
+        super.onConfigurationChanged(configuration);
+        if (root != null) setExpanded(expanded);
     }
 
     static void collapse() {

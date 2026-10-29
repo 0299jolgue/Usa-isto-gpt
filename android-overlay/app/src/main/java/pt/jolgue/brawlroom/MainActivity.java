@@ -38,7 +38,7 @@ public final class MainActivity extends Activity {
         title.setTextColor(Color.WHITE);
         root.addView(title);
         TextView help = new TextView(this);
-        help.setText("O menu fica por cima do jogo. Toca em ✕ para o fechar.");
+        help.setText("O menu fica por cima do jogo. Arrasta a barra para o mover, usa — para recolher ou ✕ para fechar. Os comandos do Termux estão dentro do menu.");
         help.setTextColor(Color.LTGRAY);
         root.addView(help);
         Button accessibility = new Button(this);
