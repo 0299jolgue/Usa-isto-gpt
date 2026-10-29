@@ -192,6 +192,17 @@ public final class OverlayService extends Service {
         browser.addJavascriptInterface(new MenuBridge(), "BrawlRoom");
         CookieManager.getInstance().setAcceptCookie(true);
         browser.setWebViewClient(new WebViewClient() {
+            @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                if (!request.isForMainFrame() || siteAddress == null) return false;
+                Uri destination = request.getUrl();
+                Uri origin = Uri.parse(siteAddress);
+                if (origin.getHost() != null && origin.getHost().equalsIgnoreCase(destination.getHost()) &&
+                        ("/bridge".equals(destination.getPath()) || "/".equals(destination.getPath()))) {
+                    openDashboard();
+                    return true;
+                }
+                return false;
+            }
             @Override public void onPageStarted(WebView view, String url, android.graphics.Bitmap icon) {
                 pageFailed = false;
                 statusLabel.setText("A LIGAR...");

@@ -29,8 +29,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cp android-overlay/app/build/outputs/apk/debug/app-debug.apk brawl-room-menu.apk
-          if gh release view overlay-v6 >/dev/null 2>&1; then
-            gh release upload overlay-v6 brawl-room-menu.apk --clobber
+          if gh release view overlay-v7 >/dev/null 2>&1; then
+            gh release upload overlay-v7 brawl-room-menu.apk --clobber
           else
-            gh release create overlay-v6 brawl-room-menu.apk --title "Brawl Room Menu 1.5" --notes "Login do menu sem redirecionamento, recarga automática em erros 5xx e atualização sem cache."
+            gh release create overlay-v7 brawl-room-menu.apk --title "Brawl Room Menu 1.6" --notes "Comandos Termux ocultos com botões de copiar e painel completo aberto fora do menu."
           fi

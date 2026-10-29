@@ -82,12 +82,17 @@
       document.getElementById('connection').classList.remove('connected');
     }
   }
-  document.getElementById('copy-command').addEventListener('click', async () => {
-    const button = document.getElementById('copy-command');
-    try {
-      await navigator.clipboard.writeText(document.getElementById('agent-command').textContent);
-      button.textContent = 'Copiado';
-    } catch (_) { button.textContent = 'Seleciona o comando'; }
-  });
+  for (const button of document.querySelectorAll('[data-command]')) {
+    button.addEventListener('click', async () => {
+      const original = button.textContent;
+      const value = document.getElementById(button.dataset.command).textContent.trim();
+      try {
+        if (window.BrawlRoom?.copyText) window.BrawlRoom.copyText(value);
+        else await navigator.clipboard.writeText(value);
+        button.textContent = 'Copiado';
+      } catch (_) { button.textContent = 'Falha ao copiar'; }
+      setTimeout(() => { button.textContent = original; }, 2500);
+    });
+  }
   refreshTimes(); refresh(); setInterval(refresh, 5000); setInterval(refreshTimes, 1000);
 })();
