@@ -33,7 +33,7 @@ def require_login():
         g.started_at = time.monotonic()
         log.info('page_request_start path=%s', request.path)
     public = {'health', 'agent_script', 'login', 'static', 'bridge.register',
-              'bridge.next_job', 'bridge.result', 'bridge.upload_screenshot',
+              'bridge.next_job', 'bridge.result', 'bridge.progress', 'bridge.upload_screenshot',
               'bridge.farm_state', 'bridge.trophies_report', 'bridge.learning_report',
               'bridge.ranked_report',
               'ai_ready', 'ai_step'}

@@ -53,6 +53,11 @@ with _db() as _con:
             screenshot_at REAL
         );
         CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS activity (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, device_id TEXT NOT NULL,
+            device_name TEXT NOT NULL, action TEXT NOT NULL, status TEXT NOT NULL,
+            detail TEXT NOT NULL DEFAULT '', created REAL NOT NULL
+        );
     ''')
 with _db() as _con:
     _columns = {row['name'] for row in _con.execute('PRAGMA table_info(devices)')}
@@ -65,6 +70,28 @@ with _db() as _con:
     if 'ranked_checked_at' not in _columns:
         _con.execute('ALTER TABLE devices ADD COLUMN ranked_checked_at REAL')
 _DB.chmod(0o600)
+
+_ACTION_NAMES = {'join': 'Entrar na sala', 'play': 'Iniciar partida',
+                 'ai': 'Testar IA', 'snapshot': 'Capturar ecrã',
+                 'tap': 'Tocar no ecrã', 'farm': 'Auto farm',
+                 'ranked_check': 'Verificar Ranked', 'farm_ranked': 'Jogar Ranked',
+                 'device': 'Telemóvel', 'profile': 'Conta'}
+
+
+def _record_event(device_id, device_name, action, status, detail=''):
+    with _db() as con:
+        con.execute('INSERT INTO activity(device_id,device_name,action,status,detail,created) '
+                    'VALUES(?,?,?,?,?,?)',
+                    (device_id, device_name, action, status, str(detail)[:300], time.time()))
+        con.execute('DELETE FROM activity WHERE id NOT IN '
+                    '(SELECT id FROM activity ORDER BY id DESC LIMIT 250)')
+
+
+def _recent_activity(limit=20):
+    with _db() as con:
+        return [dict(row) for row in con.execute(
+            'SELECT id,device_id,device_name,action,status,detail,created '
+            'FROM activity ORDER BY id DESC LIMIT ?', (limit,))]
 
 
 
@@ -84,9 +111,15 @@ def _devices():
     with _lock:
         active = {job['device_id']: job['action'] for job in _jobs.values()
                   if job['status'] in ('queued', 'running') and job['action'] in ('farm', 'farm_ranked')}
+        progress = {job['device_id']: job.get('progress', '') for job in _jobs.values()
+                    if job['status'] == 'running' and job['action'] in ('farm', 'farm_ranked')}
+        queued = {row['id']: sum(job['device_id'] == row['id'] and job['status'] == 'queued'
+                                 for job in _jobs.values()) for row in rows}
     return [dict(row) | {'online': time.time() - row['last_seen'] < 18,
                          'learning': json.loads(row['learning_stats'] or '{}'),
-                         'active_mode': active.get(row['id'])} for row in rows]
+                         'active_mode': active.get(row['id']),
+                         'progress': progress.get(row['id'], ''),
+                         'queued': queued.get(row['id'], 0)} for row in rows]
 
 
 def _device(device_id):
@@ -175,6 +208,9 @@ def _enqueue(action, target, code=None, coords=None):
                              'name': device['name'], 'status': 'queued', 'created': time.time()}
             _pending[device['id']].append(job_id)
             group['children'].append(job_id)
+    for device in selected:
+        _record_event(device['id'], device['name'], action, 'queued',
+                      'Ação colocada em fila.')
     return group_id
 
 
@@ -187,7 +223,8 @@ def overlay():
 def home():
     with _db() as con:
         has_key = bool(con.execute('SELECT value FROM settings WHERE key=?', ('brawl_api_key',)).fetchone())
-    return render_template('bridge.html', devices=_devices(), pair=_pair_code(), has_key=has_key,
+    return render_template('bridge.html', devices=_devices(), activity=_recent_activity(),
+                           action_names=_ACTION_NAMES, pair=_pair_code(), has_key=has_key,
                            base='https://' + request.host.split(':', 1)[0])
 
 
@@ -195,9 +232,13 @@ def home():
 def online():
     devices = _devices()
     return jsonify(online=sum(device['online'] for device in devices), total=len(devices),
+                   activity=_recent_activity(12),
                    devices=[{'id': device['id'], 'name': device['name'], 'online': device['online'],
+                             'last_seen': device['last_seen'], 'queued': device['queued'],
+                             'screenshot_at': device['screenshot_at'],
                              'ranked_status': device['ranked_status'],
                              'ranked_detail': device['ranked_detail'],
+                             'progress': device['progress'],
                              'active_mode': device['active_mode']} for device in devices])
 
 
@@ -221,12 +262,14 @@ def register():
         device_id, name = secrets.token_urlsafe(9), f'LDPhone {count + 1}'
         con.execute('INSERT INTO devices(id,token_hash,name,last_seen) VALUES(?,?,?,?)',
                     (device_id, digest, name, time.time()))
+    _record_event(device_id, name, 'device', 'complete', 'Telemóvel ligado ao painel.')
     return jsonify(ok=True, id=device_id, name=name, player_tag='')
 
 
 @bridge.post('/bridge/device/<device_id>/profile')
 def profile(device_id):
-    if not _device(device_id):
+    previous = _device(device_id)
+    if not previous:
         return 'Telemóvel desconhecido', 404
     name = request.form.get('name', '').strip()[:40]
     tag = request.form.get('player_tag', '').strip().upper()
@@ -234,8 +277,13 @@ def profile(device_id):
         flash('Nome ou tag de jogador inválidos.')
         return redirect(url_for('bridge.home'), code=303)
     with _db() as con:
-        con.execute('UPDATE devices SET name=?,player_tag=?,trophies=NULL,trophies_at=NULL WHERE id=?',
-                    (name, tag, device_id))
+        if tag != previous['player_tag']:
+            con.execute("UPDATE devices SET name=?,player_tag=?,trophies=NULL,trophies_at=NULL,"
+                        "ranked_status='unknown',ranked_detail='',ranked_checked_at=NULL WHERE id=?",
+                        (name, tag, device_id))
+        else:
+            con.execute('UPDATE devices SET name=? WHERE id=?', (name, device_id))
+    _record_event(device_id, name, 'profile', 'complete', 'Dados da conta atualizados.')
     flash('Conta atualizada.')
     return redirect(url_for('bridge.home'), code=303)
 
@@ -348,7 +396,7 @@ def status(group_id):
             return jsonify(error='unknown action'), 404
         for job_id in group['children']:
             job = _jobs[job_id]
-            if job['action'] != 'farm' and job['status'] in ('queued', 'running') and time.time() - job['created'] > 120:
+            if job['action'] not in ('farm', 'farm_ranked') and job['status'] in ('queued', 'running') and time.time() - job['created'] > 120:
                 job['status'], job['detail'] = 'failed', 'Tempo esgotado sem resposta do agente.'
         return jsonify(_group_status(group))
 
@@ -373,9 +421,31 @@ def stop_farm():
                     job['stop'] = True
                     if job['status'] == 'queued':
                         job['status'], job['detail'] = 'complete', 'Parado antes de iniciar.'
+                    _record_event(job['device_id'], job['name'], job['action'],
+                                  'stopping', 'Paragem pedida no painel.')
     flash('Pedido de paragem enviado.')
     return redirect(url_for('bridge.overlay') if request.form.get('return_to') == 'overlay'
                     else url_for('bridge.home'), code=303)
+
+
+@bridge.post('/bridge/queue/cancel')
+def cancel_queue():
+    target = request.form.get('target', '')
+    devices = _devices()
+    selected = {device['id'] for device in devices if target == 'all' or device['id'] == target}
+    if not selected:
+        flash('Conta não encontrada.')
+        return redirect(url_for('bridge.home'), code=303)
+    cancelled = []
+    with _lock:
+        for job in _jobs.values():
+            if job['device_id'] in selected and job['status'] == 'queued':
+                job['status'], job['detail'] = 'failed', 'Cancelado antes de iniciar.'
+                cancelled.append((job['device_id'], job['name'], job['action']))
+    for device_id, name, action in cancelled:
+        _record_event(device_id, name, action, 'cancelled', 'Cancelado antes de iniciar.')
+    flash(f'{len(cancelled)} ações em espera canceladas.')
+    return redirect(url_for('bridge.home'), code=303)
 
 
 @bridge.get('/bridge/farm-state/<job_id>')
@@ -437,6 +507,24 @@ def result(job_id):
             return jsonify(error='unknown action'), 404
         job['status'] = data['status']
         job['detail'] = str(data.get('detail', ''))[:300]
+        name, action, status, detail = job['name'], job['action'], job['status'], job['detail']
+    _record_event(device['id'], name, action, status, detail)
+    _touch(device['id'])
+    return jsonify(ok=True)
+
+
+@bridge.post('/bridge/progress/<job_id>')
+def progress(job_id):
+    device = _agent()
+    if not device:
+        return jsonify(error='unauthorized'), 401
+    data = request.get_json(silent=True) or {}
+    detail = str(data.get('detail', ''))[:160]
+    with _lock:
+        job = _jobs.get(job_id)
+        if not job or job['device_id'] != device['id'] or job['status'] != 'running':
+            return jsonify(error='unknown action'), 404
+        job['progress'] = detail
     _touch(device['id'])
     return jsonify(ok=True)
 

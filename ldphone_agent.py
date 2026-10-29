@@ -729,7 +729,8 @@ class TacticsMemory:
               f'estatísticas={self.stats}', flush=True)
 
 
-def run_ai(base, token, duration=20, stop_check=None, auto_start=True, ranked=False):
+def run_ai(base, token, duration=20, stop_check=None, auto_start=True, ranked=False,
+           progress_callback=None):
     host = urlparse(base).netloc
     connection = http.client.HTTPSConnection(host, timeout=120)
     frames = 0
@@ -739,6 +740,7 @@ def run_ai(base, token, duration=20, stop_check=None, auto_start=True, ranked=Fa
     no_detection_since = time.monotonic()
     last_exit_scan = 0
     last_draft_scan = 0
+    last_progress_report = 0
     draft_since = None
     step_errors = 0
     learner = TacticsMemory() if duration is None else None
@@ -990,6 +992,13 @@ def run_ai(base, token, duration=20, stop_check=None, auto_start=True, ranked=Fa
                         swipe_action(dict(action, duration_ms=1500), data['width'], data['height'])
                 actions += 1
             frames += 1
+            if progress_callback and time.monotonic() - last_progress_report > 10:
+                last_progress_report = time.monotonic()
+                detail = (f'Estado: {"draft" if draft_since else state}; '
+                          f'{frames} imagens, {actions} gestos; '
+                          f'vida {data.get("health") or "?"}; '
+                          f'inimigos {data.get("detections", {}).get("enemy", 0)}')
+                threading.Thread(target=progress_callback, args=(detail,), daemon=True).start()
             elapsed = (time.monotonic() - begin) * 1000
             cycles.append(elapsed)
             print(f'IA frame={frames} estado={state} tática={data.get("tactic", "-")} vida={data.get("health")} '
@@ -1075,8 +1084,14 @@ def run_farm(base, token, job_id, ranked=False):
             return 'failed', detail
     def stopped():
         return request_json(base, '/bridge/farm-state/' + job_id, token=token)['stop']
+    def progress(detail):
+        try:
+            request_json(base, '/bridge/progress/' + job_id, token=token,
+                         payload={'detail': detail})
+        except (HttpStatus, TimeoutError, OSError, ValueError) as exc:
+            print('Progresso não enviado:', exc, flush=True)
     status, detail = run_ai(base, token, duration=None, stop_check=stopped,
-                            auto_start=False, ranked=ranked)
+                            auto_start=False, ranked=ranked, progress_callback=progress)
     return status, 'Auto farm parado. ' + detail
 
 

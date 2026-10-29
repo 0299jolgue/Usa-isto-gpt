@@ -18,7 +18,11 @@ O utilizador inicial é `jolgue`; a senha fornecida pelo proprietário está gua
 
 ## Troféus
 
-Para mostrar os troféus de cada conta, guarda a tag do jogador no respetivo cartão e uma chave da API oficial no painel. A chave tem de autorizar o IP de saída da ShardCloud. O painel consulta `GET /v1/players/%23TAG` e mantém o número até à próxima atualização. Prints e controlo não precisam dessa chave.
+O botão **Troféus** pede ao LDPhone um print do lobby e tenta ler o total por OCR. A conta deve estar no lobby; um número que o OCR não consiga confirmar fica por atualizar. A tag no cartão identifica a conta para o operador.
+
+## Painel novo
+
+O painel usa uma seleção de conta para todos os comandos e guarda a escolha no navegador. Mostra números de telemóveis ligados, farms ativos, ações em fila e contas com Ranked confirmado. Cada cartão mostra o último sinal, a fila, o progresso enviado pelo agente durante o farm e a captura mais recente. A lista pode mostrar só telemóveis ligados. O botão **Atualizar ecrã** pede um novo print; **Limpar fila** cancela ações ainda não iniciadas; **Parar auto farm** envia uma paragem para a conta escolhida ou para todas. O histórico guarda as últimas 250 transições em SQLite e mostra as 12 mais recentes no painel. O navegador atualiza estado e histórico a cada cinco segundos.
 
 ## Teste da IA
 
